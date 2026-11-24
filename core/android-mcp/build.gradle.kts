@@ -27,6 +27,8 @@ android {
 
 dependencies {
     api(project(":core:contracts"))
+    implementation(project(":core:root-control"))
+    implementation(project(":core:accessibility-engine"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.bundles.ktor.server)
     implementation(libs.bundles.camerax)
