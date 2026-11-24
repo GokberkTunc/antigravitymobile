@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Antigravity Mobile</string>
+    <string name="accessibility_service_label">Antigravity Mobile UI Kontrolü</string>
+    <string name="accessibility_service_description">Antigravity ajanının ekran UI ağacını yapısal olarak okuması, kesin düğüm eylemleri yürütmesi ve 500ms Ses+ / Ses- donanım acil durdurma (Kill-Switch) kombinasyonunu dinlemesi için gereklidir.</string>
+    <string name="notification_listener_label">Antigravity Bildirim Köprüsü</string>
+    <string name="device_admin_label">Antigravity Cihaz Yöneticisi</string>
+    <string name="device_admin_description">Yerel Android System MCP üzerinden ekran kilitleme (device_control: lock) ve güvenlik politikası denetimi sağlar.</string>
+</resources>

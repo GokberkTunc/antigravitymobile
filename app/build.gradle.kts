@@ -67,7 +67,9 @@ dependencies {
     implementation(project(":feature:automation-security"))
 
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.browser)
     implementation(libs.google.material)
+    implementation(libs.libsu.core)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.bundles.compose)
     implementation(libs.androidx.activity.compose)
