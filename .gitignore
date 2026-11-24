@@ -20,7 +20,9 @@ google-services.json
 .env
 .env.*
 
-# Antigravity / Worktrees / OS
+# Antigravity / Worktrees / OS / Large Binaries
 .worktrees/
 .DS_Store
 Thumbs.db
+**/assets/rootfs/*.tar.gz
+*.hprof
