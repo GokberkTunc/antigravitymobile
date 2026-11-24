@@ -33,6 +33,14 @@ class BindMountManagerTest {
                         ShellResult(1, "", "")
                     }
                 }
+                cmd.startsWith("grep -Fq ") && cmd.contains("/proc/self/mountinfo") -> {
+                    val target = cmd.substringAfter("grep -Fq ")
+                        .substringBefore(" /proc/self/mountinfo")
+                        .trim()
+                        .trim('\'')
+                        .trim()
+                    if (target in mountedTargets) ShellResult(0, "", "") else ShellResult(1, "", "")
+                }
                 cmd.startsWith("mount ") -> {
                     mountCommands += cmd
                     val target = cmd.split(" ").last().trim('\'')
@@ -139,6 +147,14 @@ class BindMountManagerTest {
                     val target = cmd.removePrefix("mountpoint -q ").trim().trim('\'')
                     if (target in mountedTargets) ShellResult(0, "", "") else ShellResult(1, "", "")
                 }
+                cmd.startsWith("grep -Fq ") && cmd.contains("/proc/self/mountinfo") -> {
+                    val target = cmd.substringAfter("grep -Fq ")
+                        .substringBefore(" /proc/self/mountinfo")
+                        .trim()
+                        .trim('\'')
+                        .trim()
+                    if (target in mountedTargets) ShellResult(0, "", "") else ShellResult(1, "", "")
+                }
                 cmd.startsWith("umount ") -> {
                     val target = cmd.removePrefix("umount ").trim().trim('\'')
                     umountOrder += target
@@ -196,6 +212,14 @@ class BindMountManagerTest {
                     val target = cmd.removePrefix("mountpoint -q ").trim().trim('\'')
                     if (target in mountedTargets) ShellResult(0, "", "") else ShellResult(1, "", "")
                 }
+                cmd.startsWith("grep -Fq ") && cmd.contains("/proc/self/mountinfo") -> {
+                    val target = cmd.substringAfter("grep -Fq ")
+                        .substringBefore(" /proc/self/mountinfo")
+                        .trim()
+                        .trim('\'')
+                        .trim()
+                    if (target in mountedTargets) ShellResult(0, "", "") else ShellResult(1, "", "")
+                }
                 cmd.startsWith("umount ") -> {
                     val target = cmd.removePrefix("umount ").trim().trim('\'')
                     mountedTargets.remove(target)
@@ -212,5 +236,67 @@ class BindMountManagerTest {
         assertEquals(2, signalsSent.size)
         assertTrue(signalsSent[0].startsWith("kill -TERM 1001 1002"))
         assertTrue(signalsSent[1].startsWith("kill -KILL 1002"))
+    }
+
+    @Test
+    fun `mountAll detects same-filesystem profiles bind-mount via proc mountinfo when toybox mountpoint -q returns 1`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val mountedTargets = mutableSetOf<String>()
+        val mountCommands = mutableListOf<String>()
+        val rootExecutor = mockk<RootExecutor>()
+
+        coEvery { rootExecutor.exec(any(), any(), any()) } answers {
+            val cmd = firstArg<String>()
+            when {
+                cmd.startsWith("mountpoint -q ") -> {
+                    val target = cmd.removePrefix("mountpoint -q ").trim().trim('\'')
+                    // Simulate Android toybox `mountpoint -q` returning 1 for same-device /profiles bind mount.
+                    if (target == "/data/local/ag_rootfs/profiles") {
+                        ShellResult(1, "", "")
+                    } else if (target in mountedTargets) {
+                        ShellResult(0, "", "")
+                    } else {
+                        ShellResult(1, "", "")
+                    }
+                }
+                cmd.startsWith("grep -Fq ") && cmd.contains("/proc/self/mountinfo") -> {
+                    val target = cmd.substringAfter("grep -Fq ")
+                        .substringBefore(" /proc/self/mountinfo")
+                        .trim()
+                        .trim('\'')
+                        .trim()
+                    if (target in mountedTargets) ShellResult(0, "", "") else ShellResult(1, "", "")
+                }
+                cmd.startsWith("mount ") -> {
+                    mountCommands += cmd
+                    val target = cmd.split(" ").last().trim('\'')
+                    mountedTargets += target
+                    ShellResult(0, "", "")
+                }
+                cmd == "getprop net.dns1" -> ShellResult(0, "192.168.1.1\n", "")
+                cmd == "getprop net.dns2" -> ShellResult(0, "", "")
+                cmd == "getprop net.dns3" -> ShellResult(0, "", "")
+                else -> ShellResult(0, "", "")
+            }
+        }
+
+        val manager = DefaultBindMountManager(
+            rootExecutor = rootExecutor,
+            ioDispatcher = dispatcher,
+            forceKillGraceMs = 0L,
+        )
+
+        val first = manager.mountAll("/data/local/ag_rootfs", "/data/local/ag_profiles")
+        assertTrue("Expected mountAll to succeed when profiles mount appears in /proc/self/mountinfo", first.isSuccess)
+        val status = first.getOrThrow()
+        assertTrue(status.profilesMounted)
+        assertTrue(status.allCoreMounted)
+        assertEquals(7, mountCommands.size)
+
+        // Second mountAll: ZERO additional mount commands (idempotent even when toybox mountpoint -q exits 1).
+        mountCommands.clear()
+        val second = manager.mountAll("/data/local/ag_rootfs", "/data/local/ag_profiles")
+        assertTrue(second.isSuccess)
+        assertEquals(0, mountCommands.size)
     }
 }

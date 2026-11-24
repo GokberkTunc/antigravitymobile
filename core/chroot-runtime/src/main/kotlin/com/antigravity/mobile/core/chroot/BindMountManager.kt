@@ -268,7 +268,17 @@ class DefaultBindMountManager(
 
     private suspend fun isMountPoint(target: String): Boolean {
         val qTarget = PosixShellQuoting.quote(target)
-        return rootExecutor.exec("mountpoint -q $qTarget", timeoutMs = 5_000L).isSuccess
+        if (rootExecutor.exec("mountpoint -q $qTarget", timeoutMs = 5_000L).isSuccess) {
+            return true
+        }
+        // Toybox `mountpoint -q` only compares st_dev against parent, so same-filesystem bind-mounts
+        // (e.g. `/data/local/ag_profiles` -> `/data/local/ag_rootfs/profiles`, both on `/data`)
+        // exit 1 even when mounted. Fall back to checking `/proc/self/mountinfo`.
+        val qSpacedTarget = PosixShellQuoting.quote(" $target ")
+        return rootExecutor.exec(
+            "grep -Fq $qSpacedTarget /proc/self/mountinfo 2>/dev/null",
+            timeoutMs = 5_000L,
+        ).isSuccess
     }
 
     private suspend fun findActiveChrootPidsInternal(rootfsPath: String): List<Int> {
