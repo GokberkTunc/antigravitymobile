@@ -4,28 +4,94 @@ import com.antigravity.mobile.contracts.AccountProfile
 import com.antigravity.mobile.contracts.ChrootCommandSpec
 import com.antigravity.mobile.contracts.ChrootConstants
 import com.antigravity.mobile.contracts.ChrootManager
+import com.antigravity.mobile.contracts.ChrootState
 import com.antigravity.mobile.contracts.RootExecutor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.BufferedReader
+import java.io.BufferedWriter
 import java.io.IOException
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 data class AuthCompletionResult(
     val email: String? = null,
 )
 
 /**
- * Bridges `core:account-manager` with the chroot-hosted `agy` 1.4.11 binary.
+ * Abstraction over a long-lived interactive auth child process (such as `agy acp --login`)
+ * that emits a PKCE Google OAuth URL on stdout/stderr and reads the resulting authorization
+ * code or redirect URL from stdin.
+ */
+interface AuthInteractiveProcess {
+    val stdoutAndStderr: BufferedReader
+    fun writeLine(line: String)
+    fun waitForExit(timeoutMs: Long): Int?
+    fun destroy()
+}
+
+fun interface AuthProcessStarter {
+    fun start(argv: List<String>): AuthInteractiveProcess
+}
+
+private class ProcessBuilderInteractiveAuthProcess(
+    private val process: Process,
+) : AuthInteractiveProcess {
+    override val stdoutAndStderr: BufferedReader = BufferedReader(
+        InputStreamReader(process.inputStream, StandardCharsets.UTF_8),
+    )
+    private val stdinWriter = BufferedWriter(
+        OutputStreamWriter(process.outputStream, StandardCharsets.UTF_8),
+    )
+
+    override fun writeLine(line: String) {
+        stdinWriter.write(line)
+        stdinWriter.newLine()
+        stdinWriter.flush()
+        // Closing stdin signals EOF after submitting the authorization code so `agy acp --login` completes cleanly.
+        runCatching { stdinWriter.close() }
+    }
+
+    override fun waitForExit(timeoutMs: Long): Int? {
+        val finished = process.waitFor(timeoutMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS)
+        return if (finished) process.exitValue() else null
+    }
+
+    override fun destroy() {
+        runCatching { stdinWriter.close() }
+        runCatching { stdoutAndStderr.close() }
+        runCatching { process.destroyForcibly() }
+    }
+}
+
+object ProcessBuilderAuthProcessStarter : AuthProcessStarter {
+    override fun start(argv: List<String>): AuthInteractiveProcess {
+        require(argv.isNotEmpty()) { "argv must not be empty" }
+        val process = ProcessBuilder(argv)
+            .redirectErrorStream(true)
+            .start()
+        return ProcessBuilderInteractiveAuthProcess(process)
+    }
+}
+
+/**
+ * Bridges `core:account-manager` with the chroot-hosted `agy` binary.
  *
- * IMPORTANT (`docs/agy_acp_reference.md`): `agy 1.4.11` has NO `agy acp --login` flag and
- * NO standalone `agy auth` subcommand. Authentication URLs are captured from `agy` / `agy acp`
- * output when unauthenticated, and profile isolation is enforced via `HOME`, `XDG_*`,
- * `AGY_CONVERSATIONS_DIR`, `--app-data-dir`, and `--gemini-dir`.
+ * - Supports `agy 1.5.16+` interactive `agy acp --login`, keeping the process alive while the user
+ *   signs in via Chrome Custom Tabs so PKCE `code_verifier`/`state` remain intact until the
+ *   authorization code or landing URL is submitted to stdin.
+ * - Falls back to `agy models` output probing and `127.0.0.1` loopback callback forwarding for
+ *   older `agy 1.4.x` builds.
  */
 interface AgyAuthBridge {
     /**
@@ -35,8 +101,8 @@ interface AgyAuthBridge {
     suspend fun triggerAuthChallenge(profile: AccountProfile): Result<String?>
 
     /**
-     * Completes an in-progress OAuth flow by forwarding [code] to the loopback callback port
-     * (if active) or passing it to the profile's isolated auth helper, and verifying credentials.
+     * Completes an in-progress OAuth flow by submitting [code] to the active `agy acp --login`
+     * process stdin, forwarding it to a loopback callback port, or verifying credentials.
      */
     suspend fun completeAuthWithCode(
         profile: AccountProfile,
@@ -55,26 +121,91 @@ class ChrootAgyAuthBridge(
     private val rootExecutor: RootExecutor,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val loopbackForwarder: suspend (port: Int, code: String) -> Boolean = ::defaultLoopbackForward,
+    private val processStarter: AuthProcessStarter = ProcessBuilderAuthProcessStarter,
 ) : AgyAuthBridge {
+
+    private val activeLoginProcesses = ConcurrentHashMap<String, AuthInteractiveProcess>()
 
     override suspend fun triggerAuthChallenge(profile: AccountProfile): Result<String?> = withContext(ioDispatcher) {
         try {
-            // Probe `agy models` (exists in agy 1.4.11; does NOT use non-existent `agy acp --login`).
-            // When unauthenticated, `agy` emits the Google OAuth URL or auth prompt on stdout/stderr.
-            val spec = ChrootCommandSpec(
+            if (chrootManager.state.value !is ChrootState.Mounted) {
+                chrootManager.mountAll()
+            }
+
+            activeLoginProcesses.remove(profile.id)?.destroy()
+
+            val loginSpec = ChrootCommandSpec(
+                binaryPath = ChrootConstants.DEFAULT_AGY_BINARY,
+                args = listOf("acp", "--login"),
+                environment = profile.paths.toChrootEnvironment(),
+            )
+            val loginArgv = chrootManager.buildChrootCommand(loginSpec)
+            val loginProcess = runCatching { processStarter.start(loginArgv) }.getOrNull()
+
+            if (loginProcess != null) {
+                val extractedFromInteractive = awaitAuthUrlFromProcess(loginProcess)
+                if (extractedFromInteractive != null) {
+                    activeLoginProcesses[profile.id] = loginProcess
+                    return@withContext Result.success(extractedFromInteractive.url)
+                }
+                loginProcess.destroy()
+            }
+
+            // Fallback for older `agy 1.4.x` builds without `agy acp --login`.
+            val fallbackSpec = ChrootCommandSpec(
                 binaryPath = ChrootConstants.DEFAULT_AGY_BINARY,
                 args = listOf("models"),
                 environment = profile.paths.toChrootEnvironment(),
             )
-            val argv = chrootManager.buildChrootCommand(spec)
-            val result = rootExecutor.execArgv(argv = argv, timeoutMs = 20_000L)
+            val fallbackArgv = chrootManager.buildChrootCommand(fallbackSpec)
+            val result = rootExecutor.execArgv(argv = fallbackArgv, timeoutMs = 20_000L)
             val combinedOutput = "${result.stdout}\n${result.stderr}"
             val extracted = OAuthUrlExtractor.extract(combinedOutput)
             Result.success(extracted?.url)
         } catch (ce: CancellationException) {
+            activeLoginProcesses.remove(profile.id)?.destroy()
             throw ce
         } catch (t: Throwable) {
+            activeLoginProcesses.remove(profile.id)?.destroy()
             Result.failure(t)
+        }
+    }
+
+    private suspend fun awaitAuthUrlFromProcess(
+        process: AuthInteractiveProcess,
+        timeoutMs: Long = 15_000L,
+    ): ExtractedOAuthUrl? = withContext(ioDispatcher) {
+        val readerDeferred = async(ioDispatcher) {
+            val buffer = StringBuilder()
+            val reader = process.stdoutAndStderr
+            while (true) {
+                val line = try {
+                    reader.readLine()
+                } catch (_: IOException) {
+                    null
+                } ?: break
+                buffer.appendLine(line)
+                val extracted = OAuthUrlExtractor.extract(buffer.toString())
+                if (extracted != null) {
+                    return@async extracted
+                }
+            }
+            null
+        }
+
+        try {
+            val result = withTimeoutOrNull(timeoutMs) {
+                readerDeferred.await()
+            }
+            if (result == null) {
+                process.destroy()
+                readerDeferred.cancel()
+            }
+            result
+        } catch (ce: CancellationException) {
+            process.destroy()
+            readerDeferred.cancel()
+            throw ce
         }
     }
 
@@ -83,6 +214,11 @@ class ChrootAgyAuthBridge(
         code: String,
         callbackPort: Int?,
     ): Result<AuthCompletionResult> = withContext(ioDispatcher) {
+        val activeProcess = activeLoginProcesses.remove(profile.id)
+        if (activeProcess != null) {
+            return@withContext completeInteractiveLoginProcess(profile, activeProcess, code)
+        }
+
         try {
             require(code.isNotBlank()) { "Authorization code must not be blank" }
 
@@ -96,15 +232,13 @@ class ChrootAgyAuthBridge(
                 }
             }
 
-            // Fallback: write pending auth code handoff token into profile-private directory (chmod 600)
-            // for any interactive/ACP helper or verify whether profile credentials already materialized.
-            val hasCreds = hasProfileCredentials(profile)
-            if (hasCreds) {
+            // Fallback: verify whether profile credentials already materialized.
+            if (hasProfileCredentials(profile)) {
                 val email = detectEmailFromProfile(profile)
                 return@withContext Result.success(AuthCompletionResult(email = email))
             }
 
-            // Pass code via stdin to an isolated `agy` print probe when manual code fallback is used.
+            // Probe `agy models` inside the isolated profile to confirm credentials are valid.
             val spec = ChrootCommandSpec(
                 binaryPath = ChrootConstants.DEFAULT_AGY_BINARY,
                 args = listOf("models"),
@@ -118,8 +252,8 @@ class ChrootAgyAuthBridge(
             } else {
                 Result.failure(
                     IOException(
-                        "Unable to complete OAuth code exchange automatically " +
-                            "(callbackPort=$callbackPort). Verify the loopback callback or import a desktop ~/.gemini profile.",
+                        "OAuth kodu otomatik doğrulanamadı (callbackPort=$callbackPort). " +
+                            "Lütfen 'Chrome Custom Tabs ile Google Girişi' adımını yeniden başlatın veya masaüstü ~/.gemini profili içe aktarın.",
                     ),
                 )
             }
@@ -130,8 +264,63 @@ class ChrootAgyAuthBridge(
         }
     }
 
+    private suspend fun completeInteractiveLoginProcess(
+        profile: AccountProfile,
+        process: AuthInteractiveProcess,
+        code: String,
+    ): Result<AuthCompletionResult> = withContext(ioDispatcher) {
+        try {
+            require(code.isNotBlank()) { "Authorization code must not be blank" }
+            process.writeLine(code)
+
+            val outputDeferred = async(ioDispatcher) {
+                val lines = ArrayList<String>()
+                while (true) {
+                    val line = try {
+                        process.stdoutAndStderr.readLine()
+                    } catch (_: IOException) {
+                        null
+                    } ?: break
+                    lines.add(line)
+                    if (lines.size > 40) {
+                        lines.removeAt(0)
+                    }
+                }
+                lines.joinToString("\n")
+            }
+
+            val exitCode = process.waitForExit(25_000L)
+            if (exitCode == null) {
+                process.destroy()
+            }
+            val tailOutput = withTimeoutOrNull(2_000L) { outputDeferred.await() }
+                .orEmpty()
+                .trim()
+
+            if (exitCode == 0 || hasProfileCredentials(profile)) {
+                val email = detectEmailFromProfile(profile)
+                    ?: EMAIL_REGEX.find(tailOutput)?.value
+                Result.success(AuthCompletionResult(email = email))
+            } else {
+                val detail = tailOutput.ifBlank { "No diagnostic output" }
+                Result.failure(
+                    IOException("agy acp --login başarısız (exit=${exitCode ?: "timeout"}): $detail"),
+                )
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            Result.failure(t)
+        } finally {
+            process.destroy()
+        }
+    }
+
     override suspend fun fetchUsageOutput(profile: AccountProfile): Result<String> = withContext(ioDispatcher) {
         try {
+            if (chrootManager.state.value !is ChrootState.Mounted) {
+                chrootManager.mountAll()
+            }
             val spec = ChrootCommandSpec(
                 binaryPath = ChrootConstants.DEFAULT_AGY_BINARY,
                 args = listOf("--print", "/usage"),
@@ -154,17 +343,32 @@ class ChrootAgyAuthBridge(
     }
 
     private suspend fun hasProfileCredentials(profile: AccountProfile): Boolean {
-        val qGemini = AccountShellQuoting.quote(profile.paths.hostGeminiDir)
-        val res = rootExecutor.exec(
-            command = "[ -s $qGemini/oauth_creds.json ] || [ -s $qGemini/google_accounts.json ]",
-            timeoutMs = 5_000L,
+        val candidateFiles = listOf(
+            "${profile.paths.hostGeminiDir}/oauth_creds.json",
+            "${profile.paths.hostGeminiDir}/google_accounts.json",
+            "${profile.paths.hostRootDir}/home/.gemini/oauth_creds.json",
+            "${profile.paths.hostRootDir}/home/.gemini/google_accounts.json",
+            "${profile.paths.hostConfigDir}/antigravity-cli/oauth_creds.json",
+            "${profile.paths.hostConfigDir}/antigravity-cli/google_accounts.json",
+            "${profile.paths.hostRootDir}/data/antigravity-cli/oauth_creds.json",
+            "${profile.paths.hostRootDir}/data/antigravity-cli/google_accounts.json",
         )
+        val checkExpr = candidateFiles.joinToString(" || ") { path ->
+            "[ -s ${AccountShellQuoting.quote(path)} ]"
+        }
+        val res = rootExecutor.exec(command = checkExpr, timeoutMs = 5_000L)
         return res.isSuccess
     }
 
     private suspend fun detectEmailFromProfile(profile: AccountProfile): String? {
-        val qAccounts = AccountShellQuoting.quote("${profile.paths.hostGeminiDir}/google_accounts.json")
-        val res = rootExecutor.exec("[ -f $qAccounts ] && cat $qAccounts", timeoutMs = 5_000L)
+        val candidateFiles = listOf(
+            "${profile.paths.hostGeminiDir}/google_accounts.json",
+            "${profile.paths.hostRootDir}/home/.gemini/google_accounts.json",
+            "${profile.paths.hostConfigDir}/antigravity-cli/google_accounts.json",
+            "${profile.paths.hostRootDir}/data/antigravity-cli/google_accounts.json",
+        )
+        val catExpr = candidateFiles.joinToString(" ") { AccountShellQuoting.quote(it) }
+        val res = rootExecutor.exec("cat $catExpr 2>/dev/null || true", timeoutMs = 5_000L)
         if (!res.isSuccess || res.stdout.isBlank()) return null
         return EMAIL_REGEX.find(res.stdout)?.value
     }

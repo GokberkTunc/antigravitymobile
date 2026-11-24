@@ -5,6 +5,8 @@ import com.antigravity.mobile.contracts.AccountProfile
 import com.antigravity.mobile.contracts.AuthFlowState
 import com.antigravity.mobile.contracts.ChrootCommandSpec
 import com.antigravity.mobile.contracts.ChrootManager
+import com.antigravity.mobile.contracts.ChrootState
+import com.antigravity.mobile.contracts.MountStatus
 import com.antigravity.mobile.contracts.RootExecutor
 import com.antigravity.mobile.contracts.ShellResult
 import com.antigravity.mobile.contracts.UsageQuota
@@ -26,6 +28,12 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.BufferedReader
+import java.io.PipedReader
+import java.io.PipedWriter
+import java.io.StringReader
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class DefaultAccountRepositoryTest {
@@ -161,24 +169,61 @@ class DefaultAccountRepositoryTest {
     }
 
     @Test
-    fun `ChrootAgyAuthBridge NEVER uses non-existent agy acp --login flag`() = runTest {
+    fun `ChrootAgyAuthBridge runs interactive agy acp --login PKCE flow and submits code to stdin`() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val chrootManager = mockk<ChrootManager>()
         val rootExecutor = mockk<RootExecutor>()
         val specSlot = slot<ChrootCommandSpec>()
 
-        coEvery { chrootManager.buildChrootCommand(capture(specSlot)) } returns
-            listOf("su", "--mount-master", "-c", "chroot /data/local/ag_rootfs ...")
-        coEvery { rootExecutor.execArgv(any(), any(), any()) } returns ShellResult(
-            exitCode = 1,
-            stdout = "",
-            stderr = "Login at https://accounts.google.com/o/oauth2/v2/auth?client_id=x&redirect_uri=http%3A%2F%2F127.0.0.1%3A55555%2Foauth2callback",
+        every { chrootManager.state } returns MutableStateFlow(
+            ChrootState.Mounted(mountStatus = MountStatus(procMounted = true)),
         )
+        coEvery { chrootManager.buildChrootCommand(capture(specSlot)) } returns
+            listOf("su", "--mount-master", "-c", "chroot /data/local/ag_rootfs ... agy acp --login")
+        coEvery { rootExecutor.exec(any(), any(), any()) } returns ShellResult(
+            exitCode = 0,
+            stdout = """{"active":"pkce@gmail.com"}""",
+            stderr = "",
+        )
+
+        val pipeWriter = PipedWriter()
+        val pipeReader = BufferedReader(PipedReader(pipeWriter))
+        val oauthUrl = "https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=abc" +
+            "&code_challenge=xyz&code_challenge_method=S256" +
+            "&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&state=s1"
+
+        pipeWriter.write("Open this link in a browser to log in with Google:\n\n  $oauthUrl\n\n")
+        pipeWriter.flush()
+
+        val writtenLines = mutableListOf<String>()
+        var destroyed = false
+        val codeSubmittedLatch = CountDownLatch(1)
+
+        val fakeProcess = object : AuthInteractiveProcess {
+            override val stdoutAndStderr: BufferedReader = pipeReader
+            override fun writeLine(line: String) {
+                writtenLines.add(line)
+                codeSubmittedLatch.countDown()
+                pipeWriter.write("Login succeeded!\n")
+                pipeWriter.close()
+            }
+
+            override fun waitForExit(timeoutMs: Long): Int {
+                codeSubmittedLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
+                return 0
+            }
+
+            override fun destroy() {
+                destroyed = true
+                runCatching { pipeWriter.close() }
+            }
+        }
 
         val bridge = ChrootAgyAuthBridge(
             chrootManager = chrootManager,
             rootExecutor = rootExecutor,
             ioDispatcher = dispatcher,
+            processStarter = AuthProcessStarter { fakeProcess },
         )
 
         val profile = AccountProfile(
@@ -186,11 +231,68 @@ class DefaultAccountRepositoryTest {
             displayName = "Test",
             paths = com.antigravity.mobile.contracts.ProfilePaths.forProfileId("p1"),
         )
+
+        val urlRes = bridge.triggerAuthChallenge(profile)
+        assertTrue(urlRes.isSuccess)
+        assertEquals(oauthUrl, urlRes.getOrNull())
+        assertEquals(listOf("acp", "--login"), specSlot.captured.args)
+        assertEquals("/profiles/p1/home", specSlot.captured.environment["HOME"])
+        assertFalse("Process must stay alive until code is submitted", destroyed)
+
+        val completeRes = bridge.completeAuthWithCode(profile, "4/0A_pkce_code_123")
+        assertTrue(completeRes.isSuccess)
+        assertEquals("pkce@gmail.com", completeRes.getOrNull()?.email)
+        assertEquals(listOf("4/0A_pkce_code_123"), writtenLines)
+        assertTrue("Process must be cleaned up after completion", destroyed)
+    }
+
+    @Test
+    fun `ChrootAgyAuthBridge falls back to agy models when agy acp --login exits without URL`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val chrootManager = mockk<ChrootManager>()
+        val rootExecutor = mockk<RootExecutor>()
+        val capturedSpecs = mutableListOf<ChrootCommandSpec>()
+
+        every { chrootManager.state } returns MutableStateFlow(
+            ChrootState.Mounted(mountStatus = MountStatus(procMounted = true)),
+        )
+        coEvery { chrootManager.buildChrootCommand(capture(capturedSpecs)) } returns
+            listOf("su", "--mount-master", "-c", "chroot /data/local/ag_rootfs ...")
+        coEvery { rootExecutor.execArgv(any(), any(), any()) } returns ShellResult(
+            exitCode = 1,
+            stdout = "",
+            stderr = "Login at https://accounts.google.com/o/oauth2/v2/auth?client_id=x&redirect_uri=http%3A%2F%2F127.0.0.1%3A55555%2Foauth2callback",
+        )
+
+        var fallbackProcDestroyed = false
+        val failingInteractiveProcess = object : AuthInteractiveProcess {
+            override val stdoutAndStderr: BufferedReader = BufferedReader(StringReader("unknown flag: --login\n"))
+            override fun writeLine(line: String) = Unit
+            override fun waitForExit(timeoutMs: Long): Int = 2
+            override fun destroy() {
+                fallbackProcDestroyed = true
+            }
+        }
+
+        val bridge = ChrootAgyAuthBridge(
+            chrootManager = chrootManager,
+            rootExecutor = rootExecutor,
+            ioDispatcher = dispatcher,
+            processStarter = AuthProcessStarter { failingInteractiveProcess },
+        )
+
+        val profile = AccountProfile(
+            id = "p2",
+            displayName = "Legacy",
+            paths = com.antigravity.mobile.contracts.ProfilePaths.forProfileId("p2"),
+        )
         val urlRes = bridge.triggerAuthChallenge(profile)
         assertTrue(urlRes.isSuccess)
         assertNotNull(urlRes.getOrNull())
-        assertFalse("Must NEVER invoke --login flag", specSlot.captured.args.contains("--login"))
-        assertEquals("/profiles/p1/home", specSlot.captured.environment["HOME"])
+        assertTrue(urlRes.getOrNull()!!.contains("127.0.0.1"))
+        assertTrue(fallbackProcDestroyed)
+        assertEquals(listOf("acp", "--login"), capturedSpecs[0].args)
+        assertEquals(listOf("models"), capturedSpecs[1].args)
     }
 
     @Test

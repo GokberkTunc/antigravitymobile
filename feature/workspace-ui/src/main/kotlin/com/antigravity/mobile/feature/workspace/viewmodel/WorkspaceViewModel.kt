@@ -800,12 +800,40 @@ class WorkspaceViewModel @Inject constructor(
 
     private fun handleStartOAuthLogin(profileId: String, capturedAuthUrl: String?) {
         viewModelScope.launch {
+            _uiState.update { state ->
+                state.copy(
+                    errorMessage = null,
+                    onboarding = state.onboarding.copy(
+                        isBusy = true,
+                        statusMessage = "Google OAuth bağlantısı hazırlanıyor...",
+                        errorMessage = null,
+                    ),
+                )
+            }
             runSuspendCatching {
                 accountRepository.startLoginFlow(profileId, capturedAuthUrl).getOrThrow()
             }.onSuccess { challenge ->
-                _uiState.update { it.copy(pendingChromeCustomTabUrl = challenge.authUrl) }
+                _uiState.update { state ->
+                    state.copy(
+                        pendingChromeCustomTabUrl = challenge.authUrl,
+                        onboarding = state.onboarding.copy(
+                            isBusy = false,
+                            statusMessage = "Google giriş sayfası açıldı. Giriş sonrası aldığınız kodu (veya yönlendirilen tam URL'yi) aşağıya yapıştırıp Onayla'ya basın.",
+                            errorMessage = null,
+                        ),
+                    )
+                }
             }.onFailure { error ->
-                _uiState.update { it.copy(errorMessage = error.message ?: "OAuth girişi başlatılamadı") }
+                val msg = error.message ?: "OAuth girişi başlatılamadı"
+                _uiState.update { state ->
+                    state.copy(
+                        errorMessage = msg,
+                        onboarding = state.onboarding.copy(
+                            isBusy = false,
+                            errorMessage = msg,
+                        ),
+                    )
+                }
             }
         }
     }
@@ -814,13 +842,43 @@ class WorkspaceViewModel @Inject constructor(
         val cleanCode = code.trim()
         if (cleanCode.isEmpty()) return
         viewModelScope.launch {
+            _uiState.update { state ->
+                state.copy(
+                    errorMessage = null,
+                    onboarding = state.onboarding.copy(
+                        isBusy = true,
+                        statusMessage = "Doğrulama kodu kontrol ediliyor...",
+                        errorMessage = null,
+                    ),
+                )
+            }
             runSuspendCatching {
                 accountRepository.submitAuthCode(profileId, cleanCode).getOrThrow()
             }.onSuccess { profile ->
-                _uiState.update { it.copy(authBanner = null, activeProfile = profile) }
-                appendSystemMessage("Google hesabı doğrulandı: ${profile.email ?: profile.displayName}")
+                val verifiedLabel = profile.email ?: profile.displayName
+                _uiState.update { state ->
+                    state.copy(
+                        authBanner = null,
+                        activeProfile = profile,
+                        onboarding = state.onboarding.copy(
+                            isBusy = false,
+                            statusMessage = "Google hesabı doğrulandı: $verifiedLabel",
+                            errorMessage = null,
+                        ),
+                    )
+                }
+                appendSystemMessage("Google hesabı doğrulandı: $verifiedLabel")
             }.onFailure { error ->
-                _uiState.update { it.copy(errorMessage = error.message ?: "Doğrulama kodu reddedildi") }
+                val msg = error.message ?: "Doğrulama kodu reddedildi"
+                _uiState.update { state ->
+                    state.copy(
+                        errorMessage = msg,
+                        onboarding = state.onboarding.copy(
+                            isBusy = false,
+                            errorMessage = msg,
+                        ),
+                    )
+                }
             }
         }
     }
@@ -829,13 +887,42 @@ class WorkspaceViewModel @Inject constructor(
         val cleanPath = sourcePath.trim()
         if (cleanPath.isEmpty()) return
         viewModelScope.launch {
+            _uiState.update { state ->
+                state.copy(
+                    errorMessage = null,
+                    onboarding = state.onboarding.copy(
+                        isBusy = true,
+                        statusMessage = "Masaüstü ~/.gemini profili içe aktarılıyor...",
+                        errorMessage = null,
+                    ),
+                )
+            }
             runSuspendCatching {
                 accountRepository.importDesktopProfile(profileId, cleanPath).getOrThrow()
             }.onSuccess { profile ->
-                _uiState.update { it.copy(authBanner = null, activeProfile = profile) }
+                _uiState.update { state ->
+                    state.copy(
+                        authBanner = null,
+                        activeProfile = profile,
+                        onboarding = state.onboarding.copy(
+                            isBusy = false,
+                            statusMessage = "Masaüstü ~/.gemini profili içe aktarıldı: ${profile.displayName}",
+                            errorMessage = null,
+                        ),
+                    )
+                }
                 appendSystemMessage("Masaüstü ~/.gemini profili içe aktarıldı: ${profile.displayName}")
             }.onFailure { error ->
-                _uiState.update { it.copy(errorMessage = error.message ?: "Masaüstü profili içe aktarılamadı") }
+                val msg = error.message ?: "Masaüstü profili içe aktarılamadı"
+                _uiState.update { state ->
+                    state.copy(
+                        errorMessage = msg,
+                        onboarding = state.onboarding.copy(
+                            isBusy = false,
+                            errorMessage = msg,
+                        ),
+                    )
+                }
             }
         }
     }

@@ -168,7 +168,8 @@ object OAuthCallbackParser {
     }
 
     /**
-     * Accepts either a raw manual authorization code OR a pasted loopback redirect URL
+     * Accepts a raw manual authorization code, a pasted loopback redirect URL, OR the official
+     * `https://antigravity.google/oauth-callback?...` landing URL emitted by `agy 1.5.16+`,
      * and returns the extracted authorization code.
      */
     fun extractCodeFromUserInput(input: String): Result<String> {
@@ -177,6 +178,35 @@ object OAuthCallbackParser {
             return Result.failure(IllegalArgumentException("Authorization code must not be blank"))
         }
         if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+            val uri = try {
+                URI(trimmed)
+            } catch (e: Exception) {
+                return Result.failure(IllegalArgumentException("Malformed callback URI: ${e.message}"))
+            }
+            val scheme = uri.scheme?.lowercase()
+            val host = uri.host?.lowercase()
+            val isOfficialAntigravityCallback = scheme == "https" &&
+                host == "antigravity.google" &&
+                uri.path?.startsWith("/oauth-callback") == true
+
+            if (isOfficialAntigravityCallback) {
+                val params = OAuthUrlExtractor.parseQueryParams(uri.rawQuery)
+                val error = params["error"]
+                if (!error.isNullOrBlank()) {
+                    val desc = params["error_description"]?.takeIf { it.isNotBlank() }
+                    return Result.failure(
+                        IllegalStateException(
+                            "Google OAuth returned error '$error'" + (desc?.let { ": $it" } ?: ""),
+                        ),
+                    )
+                }
+                val code = params["code"]?.trim()
+                if (code.isNullOrEmpty()) {
+                    return Result.failure(IllegalArgumentException("Callback URI missing 'code' query parameter"))
+                }
+                return Result.success(code)
+            }
+
             return when (val parsed = parse(trimmed)) {
                 is OAuthCallbackResult.Success -> Result.success(parsed.code)
                 is OAuthCallbackResult.OAuthError -> Result.failure(

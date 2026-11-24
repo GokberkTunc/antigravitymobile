@@ -1,5 +1,6 @@
 package com.antigravity.mobile.feature.workspace.ui
 
+import android.content.Intent
 import android.net.Uri
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.material3.DrawerValue
@@ -37,11 +38,17 @@ fun AntigravityWorkspaceRoute(
 
     LaunchedEffect(state.pendingChromeCustomTabUrl) {
         val authUrl = state.pendingChromeCustomTabUrl ?: return@LaunchedEffect
-        runCatching {
+        val parsedUri = Uri.parse(authUrl)
+        val launchedCustomTab = runCatching {
             val customTabsIntent = CustomTabsIntent.Builder()
                 .setShowTitle(true)
                 .build()
-            customTabsIntent.launchUrl(context, Uri.parse(authUrl))
+            customTabsIntent.launchUrl(context, parsedUri)
+        }.isSuccess
+        if (!launchedCustomTab) {
+            runCatching {
+                context.startActivity(Intent(Intent.ACTION_VIEW, parsedUri))
+            }
         }
         viewModel.onAction(WorkspaceAction.ConsumeChromeCustomTabUrl)
     }

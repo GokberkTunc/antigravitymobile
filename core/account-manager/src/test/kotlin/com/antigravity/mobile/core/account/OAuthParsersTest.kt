@@ -62,7 +62,7 @@ class OAuthParsersTest {
     }
 
     @Test
-    fun `extractCodeFromUserInput accepts both raw auth codes and pasted loopback callback URLs`() {
+    fun `extractCodeFromUserInput accepts raw codes, loopback URLs, and official antigravity oauth-callback URLs`() {
         val rawCode = OAuthCallbackParser.extractCodeFromUserInput("  4/0A_manual_code_123  ")
         assertEquals("4/0A_manual_code_123", rawCode.getOrThrow())
 
@@ -71,6 +71,18 @@ class OAuthParsersTest {
         )
         assertEquals("4/0A_pasted_url_code", pastedUrl.getOrThrow())
 
+        val officialLandingUrl = OAuthCallbackParser.extractCodeFromUserInput(
+            "https://antigravity.google/oauth-callback?code=4%2F0A_official_pkce_code&state=Z5nRf",
+        )
+        assertEquals("4/0A_official_pkce_code", officialLandingUrl.getOrThrow())
+
+        assertTrue(
+            "Strict loopback parse() must still reject non-loopback hosts",
+            OAuthCallbackParser.parse("https://antigravity.google/oauth-callback?code=123") is OAuthCallbackResult.Invalid,
+        )
+        assertTrue(
+            OAuthCallbackParser.extractCodeFromUserInput("https://antigravity.google/oauth-callback?error=access_denied").isFailure,
+        )
         assertTrue(OAuthCallbackParser.extractCodeFromUserInput("   ").isFailure)
         assertTrue(OAuthCallbackParser.extractCodeFromUserInput("https://evil.com/cb?code=123").isFailure)
     }

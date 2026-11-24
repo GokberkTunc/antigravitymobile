@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.antigravity.mobile.contracts.AuthFlowState
 import com.antigravity.mobile.contracts.ChrootState
 import com.antigravity.mobile.contracts.RootProviderType
 import com.antigravity.mobile.feature.workspace.model.RootfsSourceOption
@@ -114,14 +115,15 @@ fun OnboardingScreen(
                 }
             }
 
-            if (onboarding.errorMessage != null) {
+            val visibleError = onboarding.errorMessage ?: state.errorMessage
+            if (visibleError != null) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.errorContainer,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
-                        text = onboarding.errorMessage,
+                        text = visibleError,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.padding(12.dp),
@@ -365,6 +367,7 @@ fun OnboardingScreen(
                     }
                 } else {
                     val active = state.activeProfile
+                    val authState = state.authFlowState
                     Text(
                         text = "Aktif Profil: ${active.displayName} (${if (active.isAuthenticated) "Doğrulandı" else "Giriş Bekleniyor"})",
                         style = MaterialTheme.typography.bodyMedium,
@@ -372,9 +375,108 @@ fun OnboardingScreen(
                     )
                     Button(
                         onClick = { onAction(WorkspaceAction.StartOAuthLogin(active.id, null)) },
+                        enabled = authState !is AuthFlowState.Starting && !onboarding.isBusy,
                         shape = RoundedCornerShape(10.dp),
                     ) {
+                        if (authState is AuthFlowState.Starting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
                         Text("Chrome Custom Tabs ile Google Girişi")
+                    }
+
+                    when (authState) {
+                        is AuthFlowState.Starting -> {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                                Text(
+                                    text = "Google OAuth URL hazırlanıyor...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+
+                        is AuthFlowState.AwaitingBrowserAuth -> {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Text(
+                                        text = authState.challenge.instructions.ifBlank {
+                                            "Chrome Custom Tabs üzerinden Google hesabınızla giriş yapın; yönlendirilen sayfadaki kodu veya tam URL'yi aşağıya yapıştırıp Onayla'ya basın."
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    OutlinedButton(
+                                        onClick = {
+                                            onAction(
+                                                WorkspaceAction.StartOAuthLogin(
+                                                    active.id,
+                                                    authState.challenge.authUrl,
+                                                ),
+                                            )
+                                        },
+                                        enabled = !onboarding.isBusy,
+                                        shape = RoundedCornerShape(8.dp),
+                                    ) {
+                                        Text("Tarayıcıda Tekrar Aç")
+                                    }
+                                }
+                            }
+                        }
+
+                        is AuthFlowState.SubmittingCode -> {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                                Text(
+                                    text = "Doğrulama kodu onaylanıyor...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+
+                        is AuthFlowState.Authenticated -> {
+                            Text(
+                                text = "Doğrulandı: ${authState.email ?: active.displayName}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = AntigravityPalette.SuccessGreen,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+
+                        is AuthFlowState.Failed -> {
+                            Text(
+                                text = authState.reason,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = AntigravityPalette.CriticalRed,
+                            )
+                        }
+
+                        AuthFlowState.Idle -> Unit
                     }
 
                     Row(

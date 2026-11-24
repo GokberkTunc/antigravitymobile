@@ -1,9 +1,6 @@
 package com.antigravity.mobile.core.account
 
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
-import androidx.browser.customtabs.CustomTabsIntent
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -38,23 +35,16 @@ interface OAuthBrowserLauncher {
 }
 
 class AndroidChromeCustomTabsLauncher @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @Suppress("unused") @ApplicationContext private val context: Context,
 ) : OAuthBrowserLauncher {
 
+    /**
+     * Validates that [authUrl] is a genuine HTTPS `accounts.google.com` OAuth URL.
+     * Actual Activity launch is performed once from the foreground UI (`AntigravityWorkspaceRoute`)
+     * using the Activity context so Android 17 does not block or double-launch Chrome Custom Tabs.
+     */
     override fun launchAuthUrl(authUrl: String): Boolean {
-        if (!OAuthUrlExtractor.isValidGoogleAuthUrl(authUrl)) {
-            return false
-        }
-        return try {
-            val customTabsIntent = CustomTabsIntent.Builder()
-                .setShowTitle(true)
-                .build()
-            customTabsIntent.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            customTabsIntent.launchUrl(context, Uri.parse(authUrl))
-            true
-        } catch (_: Exception) {
-            false
-        }
+        return OAuthUrlExtractor.isValidGoogleAuthUrl(authUrl)
     }
 }
 
