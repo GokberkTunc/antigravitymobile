@@ -39,9 +39,17 @@ import com.antigravity.mobile.contracts.ToolCallStatus
 import com.antigravity.mobile.contracts.UsageQuota
 import com.antigravity.mobile.contracts.VoiceState
 import com.antigravity.mobile.contracts.VoiceTranscriber
+import com.antigravity.mobile.feature.workspace.data.FileWorkspaceLocalStore
+import com.antigravity.mobile.feature.workspace.data.InMemoryWorkspaceLocalStore
+import com.antigravity.mobile.feature.workspace.model.AppThemeMode
+import com.antigravity.mobile.feature.workspace.model.InterfaceLayoutMode
 import com.antigravity.mobile.feature.workspace.model.OverviewTab
 import com.antigravity.mobile.feature.workspace.model.RootfsSourceOption
+import com.antigravity.mobile.feature.workspace.model.SettingsCategory
 import com.antigravity.mobile.feature.workspace.model.WorkspaceAction
+import com.antigravity.mobile.feature.workspace.model.WorkspaceConversation
+import java.io.File
+import java.nio.file.Files
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -531,5 +539,235 @@ class WorkspaceViewModelTest {
         coVerify { voiceTranscriber.cancel() }
         coVerify { acpClient.cancelSession("sess-1") }
         coVerify { securityPolicyEngine.triggerEmergencyKillSwitch(any()) }
+    }
+
+    @Test
+    fun `conversations CRUD supports create, auto-title, select across projects, rename, pin, and delete`() = runTest {
+        advanceUntilIdle()
+
+        // Initial default conversation is hydrated for proj-sdcard
+        val initialConvId = viewModel.uiState.value.activeConversationId
+        assertNotNull(initialConvId)
+        assertEquals(WorkspaceConversation.DEFAULT_TITLE, viewModel.uiState.value.activeConversation?.title)
+
+        // Sending first prompt auto-titles the default conversation and persists message
+        viewModel.onAction(WorkspaceAction.SendMessage("Android 15 ayarlarını optimize et"))
+        advanceUntilIdle()
+        assertEquals("Android 15 ayarlarını optimize et", viewModel.uiState.value.activeConversation?.title)
+        assertEquals(1, viewModel.uiState.value.activeConversation?.messages?.size)
+
+        // Create a new conversation under another project cancels previous session and switches cleanly
+        viewModel.onAction(WorkspaceAction.CreateConversation(projectId = "proj-projects", title = "Compose Refactor"))
+        advanceUntilIdle()
+        coVerify { acpClient.cancelSession("sess-1") }
+        val secondConv = viewModel.uiState.value.activeConversation
+        assertNotNull(secondConv)
+        assertEquals("proj-projects", viewModel.uiState.value.activeProject.id)
+        assertEquals("Compose Refactor", secondConv?.title)
+        assertTrue(viewModel.uiState.value.messages.isEmpty())
+        assertTrue("proj-projects" in viewModel.uiState.value.expandedProjectIds)
+
+        // Rename & pin conversation
+        viewModel.onAction(WorkspaceAction.RenameConversation(secondConv!!.id, "UI Mimari Yükseltmesi"))
+        viewModel.onAction(WorkspaceAction.TogglePinConversation(secondConv.id))
+        assertEquals("UI Mimari Yükseltmesi", viewModel.uiState.value.activeConversation?.title)
+        assertTrue(viewModel.uiState.value.activeConversation?.isPinned == true)
+
+        // Selecting initial conversation switches activeProject back and restores its messages
+        viewModel.onAction(WorkspaceAction.SelectConversation(initialConvId!!))
+        advanceUntilIdle()
+        assertEquals("proj-sdcard", viewModel.uiState.value.activeProject.id)
+        assertEquals(initialConvId, viewModel.uiState.value.activeConversationId)
+        assertEquals(1, viewModel.uiState.value.messages.size)
+
+        // Deleting active conversation when it's the only one in proj-sdcard creates a fresh empty one
+        viewModel.onAction(WorkspaceAction.DeleteConversation(initialConvId))
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.conversations.none { it.id == initialConvId })
+        assertNotNull(viewModel.uiState.value.activeConversationId)
+        assertTrue(viewModel.uiState.value.messages.isEmpty())
+        assertEquals("proj-sdcard", viewModel.uiState.value.activeConversation?.projectId)
+
+        // Deleting secondConv (non-active) removes it cleanly without changing activeConversationId
+        val activeBefore = viewModel.uiState.value.activeConversationId
+        viewModel.onAction(WorkspaceAction.DeleteConversation(secondConv.id))
+        advanceUntilIdle()
+        assertEquals(activeBefore, viewModel.uiState.value.activeConversationId)
+        assertTrue(viewModel.uiState.value.conversations.none { it.id == secondConv.id })
+    }
+
+    @Test
+    fun `projects CRUD supports create, rename, expand toggle, search, and cascading delete`() = runTest {
+        advanceUntilIdle()
+
+        viewModel.onAction(
+            WorkspaceAction.CreateProject(
+                name = "KernelSU Modülü",
+                rootPath = "/mnt/sdcard/Projects/ksu",
+                defaultPermissionMode = PermissionMode.PLAN,
+            ),
+        )
+        advanceUntilIdle()
+
+        val createdProject = viewModel.uiState.value.activeProject
+        assertEquals("KernelSU Modülü", createdProject.name)
+        assertTrue(createdProject.id in viewModel.uiState.value.expandedProjectIds)
+
+        // Add another conversation under createdProject
+        viewModel.onAction(WorkspaceAction.CreateConversation(createdProject.id, "Hook Tasarımı"))
+        advanceUntilIdle()
+        assertEquals(2, viewModel.uiState.value.conversations.count { it.projectId == createdProject.id })
+
+        // Rename project
+        viewModel.onAction(WorkspaceAction.RenameProject(createdProject.id, "KernelSU Pro"))
+        assertEquals("KernelSU Pro", viewModel.uiState.value.activeProject.name)
+
+        // Toggle expand & sidebar search
+        viewModel.onAction(WorkspaceAction.ToggleProjectExpanded(createdProject.id))
+        assertFalse(createdProject.id in viewModel.uiState.value.expandedProjectIds)
+        viewModel.onAction(WorkspaceAction.UpdateSidebarSearch("Hook"))
+        assertEquals("Hook", viewModel.uiState.value.sidebarSearchQuery)
+
+        // Delete project cascades and removes all its conversations, switching to another remaining project
+        viewModel.onAction(WorkspaceAction.DeleteProject(createdProject.id))
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.projects.none { it.id == createdProject.id })
+        assertTrue(viewModel.uiState.value.conversations.none { it.projectId == createdProject.id })
+        assertTrue(viewModel.uiState.value.activeProject.id != createdProject.id)
+        assertNotNull(viewModel.uiState.value.activeConversationId)
+    }
+
+    @Test
+    fun `settings, local persistence round-trip, and onboarding back-navigation work seamlessly`() = runTest {
+        val tempDir = Files.createTempDirectory("ag_workspace_store_test").toFile()
+        try {
+            val storeFile = File(tempDir, "workspace_state.json")
+            val fileStore = FileWorkspaceLocalStore(file = storeFile, ioDispatcher = testDispatcher)
+            val persistentVm = WorkspaceViewModel(
+                accountRepository = accountRepository,
+                acpClient = acpClient,
+                androidMcpServer = androidMcpServer,
+                automationScheduler = automationScheduler,
+                securityPolicyEngine = securityPolicyEngine,
+                voiceTranscriber = voiceTranscriber,
+                chrootManager = chrootManager,
+                rootExecutor = rootExecutor,
+                localStore = fileStore,
+            )
+            advanceUntilIdle()
+
+            persistentVm.onAction(WorkspaceAction.OpenSettings(SettingsCategory.MODELS_AGENT))
+            assertTrue(persistentVm.uiState.value.showSettings)
+            assertEquals(SettingsCategory.MODELS_AGENT, persistentVm.uiState.value.selectedSettingsCategory)
+
+            persistentVm.onAction(
+                WorkspaceAction.UpdateSettings {
+                    it.copy(
+                        themeMode = AppThemeMode.LIGHT,
+                        useDynamicColor = true,
+                        layoutMode = InterfaceLayoutMode.COMPACT_MOBILE,
+                        acpSandboxEnabled = true,
+                        overlayOpacity = 0.75f,
+                    )
+                },
+            )
+            advanceUntilIdle()
+
+            // Open onboarding from Settings -> DismissOnboarding returns to Settings
+            persistentVm.onAction(WorkspaceAction.OpenOnboardingFromSettings(fromSettings = true))
+            assertTrue(persistentVm.uiState.value.showOnboarding)
+            assertFalse(persistentVm.uiState.value.showSettings)
+            assertTrue(persistentVm.uiState.value.onboardingReturnToSettings)
+
+            persistentVm.onAction(WorkspaceAction.DismissOnboarding)
+            assertFalse(persistentVm.uiState.value.showOnboarding)
+            assertTrue(persistentVm.uiState.value.showSettings)
+            assertFalse(persistentVm.uiState.value.onboardingReturnToSettings)
+
+            persistentVm.onAction(WorkspaceAction.CloseSettings)
+            assertFalse(persistentVm.uiState.value.showSettings)
+
+            // Re-hydrate a second ViewModel from the same file store and verify settings survived
+            val rehydratedVm = WorkspaceViewModel(
+                accountRepository = accountRepository,
+                acpClient = acpClient,
+                androidMcpServer = androidMcpServer,
+                automationScheduler = automationScheduler,
+                securityPolicyEngine = securityPolicyEngine,
+                voiceTranscriber = voiceTranscriber,
+                chrootManager = chrootManager,
+                rootExecutor = rootExecutor,
+                localStore = fileStore,
+            )
+            advanceUntilIdle()
+
+            assertEquals(AppThemeMode.LIGHT, rehydratedVm.uiState.value.settings.themeMode)
+            assertTrue(rehydratedVm.uiState.value.settings.useDynamicColor)
+            assertEquals(InterfaceLayoutMode.COMPACT_MOBILE, rehydratedVm.uiState.value.settings.layoutMode)
+            assertTrue(rehydratedVm.uiState.value.settings.acpSandboxEnabled)
+            assertEquals(0.75f, rehydratedVm.uiState.value.settings.overlayOpacity, 0.001f)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `quota sheet opens, refreshes all authenticated profiles, and auto-refreshes unfetched active profile`() = runTest {
+        coEvery { accountRepository.refreshUsage("prof-1") } returns Result.success(
+            UsageQuota(planTier = AccountPlanTier.PRO, remainingPercent = 82.5, updatedAtEpochMs = 1_000L),
+        )
+        coEvery { accountRepository.refreshUsage("prof-2") } returns Result.success(
+            UsageQuota(planTier = AccountPlanTier.ULTRA, remainingPercent = 97.0, updatedAtEpochMs = 1_000L),
+        )
+        advanceUntilIdle()
+
+        viewModel.onAction(WorkspaceAction.OpenQuotaSheet)
+        assertTrue(viewModel.uiState.value.showQuotaSheet)
+
+        viewModel.onAction(WorkspaceAction.RefreshAllQuotas)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { accountRepository.refreshUsage("prof-1") }
+        coVerify(exactly = 1) { accountRepository.refreshUsage("prof-2") }
+        assertFalse(viewModel.uiState.value.isRefreshingQuota)
+        assertEquals(82.5, viewModel.uiState.value.activeProfile?.quota?.remainingPercent ?: 0.0, 0.01)
+        assertEquals(
+            97.0,
+            viewModel.uiState.value.profiles.first { it.id == "prof-2" }.quota.remainingPercent ?: 0.0,
+            0.01,
+        )
+
+        viewModel.onAction(WorkspaceAction.CloseQuotaSheet)
+        assertFalse(viewModel.uiState.value.showQuotaSheet)
+
+        // When active profile has unfetched quota (remainingPercent == null && updatedAtEpochMs == 0L),
+        // opening quota sheet auto-refreshes it
+        val unfetchedProfile = primaryProfile.copy(quota = UsageQuota())
+        profilesFlow.value = listOf(unfetchedProfile, backupProfile)
+        activeProfileFlow.value = unfetchedProfile
+        advanceUntilIdle()
+
+        viewModel.onAction(WorkspaceAction.OpenQuotaSheet)
+        advanceUntilIdle()
+        coVerify(atLeast = 2) { accountRepository.refreshUsage("prof-1") }
+    }
+
+    @Test
+    fun `deleteProfile and unmountChroot delegate to repositories and update state`() = runTest {
+        coEvery { accountRepository.deleteProfile("prof-2") } returns Result.success(Unit)
+        coEvery { chrootManager.unmountSafely(force = false) } returns Result.success(MountStatus())
+        advanceUntilIdle()
+
+        viewModel.onAction(WorkspaceAction.DeleteProfile("prof-2"))
+        advanceUntilIdle()
+        coVerify(exactly = 1) { accountRepository.deleteProfile("prof-2") }
+        assertTrue(viewModel.uiState.value.profiles.none { it.id == "prof-2" })
+
+        viewModel.onAction(WorkspaceAction.UnmountChroot)
+        advanceUntilIdle()
+        coVerify(exactly = 1) { chrootManager.unmountSafely(force = false) }
+        assertFalse(viewModel.uiState.value.onboarding.isBusy)
+        assertNull(viewModel.uiState.value.onboarding.errorMessage)
+        assertNotNull(viewModel.uiState.value.onboarding.statusMessage)
     }
 }

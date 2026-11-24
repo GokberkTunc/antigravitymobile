@@ -126,6 +126,10 @@ data class WorkspaceUiState(
     val authFlowState: AuthFlowState = AuthFlowState.Idle,
     val projects: List<WorkspaceProject> = defaultProjects(),
     val activeProject: WorkspaceProject = defaultProjects().first(),
+    val conversations: List<WorkspaceConversation> = emptyList(),
+    val activeConversationId: String? = null,
+    val expandedProjectIds: Set<String> = setOf("proj-sdcard"),
+    val sidebarSearchQuery: String = "",
     val messages: List<WorkspaceChatMessage> = emptyList(),
     val activeSession: AcpSessionInfo? = null,
     val sessionState: AcpSessionState = AcpSessionState.DISCONNECTED,
@@ -157,10 +161,19 @@ data class WorkspaceUiState(
     val isOverviewSheetVisible: Boolean = false,
     val selectedOverviewTab: OverviewTab = OverviewTab.SUBAGENTS,
     val selectedSwarmSubTab: SwarmSubTab = SwarmSubTab.BOARD,
+    val showSettings: Boolean = false,
+    val selectedSettingsCategory: SettingsCategory = SettingsCategory.GENERAL,
+    val showQuotaSheet: Boolean = false,
+    val isRefreshingQuota: Boolean = false,
+    val settings: AppSettings = AppSettings(),
+    val onboardingReturnToSettings: Boolean = false,
     val onboarding: OnboardingUiState = OnboardingUiState(),
     val showOnboarding: Boolean = false,
     val errorMessage: String? = null,
-)
+) {
+    val activeConversation: WorkspaceConversation?
+        get() = activeConversationId?.let { id -> conversations.firstOrNull { it.id == id } }
+}
 
 fun defaultProjects(): List<WorkspaceProject> = listOf(
     WorkspaceProject(

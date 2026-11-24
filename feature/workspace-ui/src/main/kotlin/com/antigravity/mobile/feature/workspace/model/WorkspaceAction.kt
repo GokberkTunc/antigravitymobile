@@ -38,13 +38,37 @@ sealed interface WorkspaceAction {
     data object ConsumeChromeCustomTabUrl : WorkspaceAction
     data object DismissQuotaWarning : WorkspaceAction
 
-    // Projects
+    // Projects & Conversations (Desktop-Parity CRUD)
     data class SelectProject(val projectId: String) : WorkspaceAction
     data class CreateProject(
         val name: String,
         val rootPath: String,
         val defaultPermissionMode: PermissionMode = PermissionMode.ASK,
     ) : WorkspaceAction
+    data class DeleteProject(val projectId: String) : WorkspaceAction
+    data class RenameProject(val projectId: String, val newName: String) : WorkspaceAction
+    data class ToggleProjectExpanded(val projectId: String) : WorkspaceAction
+    data class UpdateSidebarSearch(val query: String) : WorkspaceAction
+    data class CreateConversation(val projectId: String? = null, val title: String? = null) : WorkspaceAction
+    data class SelectConversation(val conversationId: String) : WorkspaceAction
+    data class DeleteConversation(val conversationId: String) : WorkspaceAction
+    data class RenameConversation(val conversationId: String, val newTitle: String) : WorkspaceAction
+    data class TogglePinConversation(val conversationId: String) : WorkspaceAction
+
+    // Navigation / Settings / Quota
+    data class OpenSettings(val category: SettingsCategory = SettingsCategory.GENERAL) : WorkspaceAction
+    data object CloseSettings : WorkspaceAction
+    data class SelectSettingsCategory(val category: SettingsCategory) : WorkspaceAction
+    data class UpdateSettings(val transform: (AppSettings) -> AppSettings) : WorkspaceAction
+    data object OpenQuotaSheet : WorkspaceAction
+    data object CloseQuotaSheet : WorkspaceAction
+    data object RefreshAllQuotas : WorkspaceAction
+    data object DismissOnboarding : WorkspaceAction
+    data class OpenOnboardingFromSettings(val fromSettings: Boolean = true) : WorkspaceAction
+
+    // Mobile Root / Chroot & Account Management from Settings
+    data object UnmountChroot : WorkspaceAction
+    data class DeleteProfile(val profileId: String) : WorkspaceAction
 
     // Permission & Diff Approvals
     data class RespondToPermission(

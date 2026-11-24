@@ -29,16 +29,22 @@ import com.antigravity.mobile.contracts.VoiceState
 import com.antigravity.mobile.contracts.VoiceTranscriber
 import com.antigravity.mobile.contracts.WorkspaceChatMessage
 import com.antigravity.mobile.contracts.WorkspaceProject
+import com.antigravity.mobile.feature.workspace.data.InMemoryWorkspaceLocalStore
+import com.antigravity.mobile.feature.workspace.data.WorkspaceLocalStore
+import com.antigravity.mobile.feature.workspace.data.WorkspaceSnapshot
 import com.antigravity.mobile.feature.workspace.model.AuthBannerState
 import com.antigravity.mobile.feature.workspace.model.OverviewTab
 import com.antigravity.mobile.feature.workspace.model.QuotaWarningState
 import com.antigravity.mobile.feature.workspace.model.RootfsSourceOption
+import com.antigravity.mobile.feature.workspace.model.SettingsCategory
 import com.antigravity.mobile.feature.workspace.model.SlashCommand
 import com.antigravity.mobile.feature.workspace.model.SubagentItem
 import com.antigravity.mobile.feature.workspace.model.WorkspaceAction
 import com.antigravity.mobile.feature.workspace.model.WorkspaceArtifact
+import com.antigravity.mobile.feature.workspace.model.WorkspaceConversation
 import com.antigravity.mobile.feature.workspace.model.WorkspaceUiState
 import com.antigravity.mobile.feature.workspace.model.defaultMentions
+import com.antigravity.mobile.feature.workspace.model.defaultProjects
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -69,12 +75,16 @@ class WorkspaceViewModel @Inject constructor(
     private val voiceTranscriber: VoiceTranscriber,
     private val chrootManager: ChrootManager,
     private val rootExecutor: RootExecutor,
+    private val localStore: WorkspaceLocalStore = InMemoryWorkspaceLocalStore(),
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(WorkspaceUiState())
     val uiState: StateFlow<WorkspaceUiState> = _uiState.asStateFlow()
 
+    private var hasAutoRefreshedQuota = false
+
     init {
+        hydrateFromLocalStore()
         refreshMcpTools()
         observeCoreFlows()
         observeAcpEvents()
@@ -126,6 +136,36 @@ class WorkspaceViewModel @Inject constructor(
             WorkspaceAction.DismissQuotaWarning -> _uiState.update { it.copy(quotaWarning = null) }
             is WorkspaceAction.SelectProject -> handleSelectProject(action.projectId)
             is WorkspaceAction.CreateProject -> handleCreateProject(action)
+            is WorkspaceAction.DeleteProject -> handleDeleteProject(action.projectId)
+            is WorkspaceAction.RenameProject -> handleRenameProject(action.projectId, action.newName)
+            is WorkspaceAction.ToggleProjectExpanded -> handleToggleProjectExpanded(action.projectId)
+            is WorkspaceAction.UpdateSidebarSearch -> _uiState.update { it.copy(sidebarSearchQuery = action.query) }
+            is WorkspaceAction.CreateConversation -> handleCreateConversation(action.projectId, action.title)
+            is WorkspaceAction.SelectConversation -> handleSelectConversation(action.conversationId)
+            is WorkspaceAction.DeleteConversation -> handleDeleteConversation(action.conversationId)
+            is WorkspaceAction.RenameConversation -> handleRenameConversation(action.conversationId, action.newTitle)
+            is WorkspaceAction.TogglePinConversation -> handleTogglePinConversation(action.conversationId)
+            is WorkspaceAction.OpenSettings -> handleOpenSettings(action.category)
+            WorkspaceAction.CloseSettings -> _uiState.update {
+                it.copy(showSettings = false, onboardingReturnToSettings = false)
+            }
+
+            is WorkspaceAction.SelectSettingsCategory -> handleSelectSettingsCategory(action.category)
+            is WorkspaceAction.UpdateSettings -> handleUpdateSettings(action.transform)
+            WorkspaceAction.OpenQuotaSheet -> handleOpenQuotaSheet()
+            WorkspaceAction.CloseQuotaSheet -> _uiState.update { it.copy(showQuotaSheet = false) }
+            WorkspaceAction.RefreshAllQuotas -> handleRefreshAllQuotas()
+            WorkspaceAction.DismissOnboarding -> handleDismissOnboarding()
+            is WorkspaceAction.OpenOnboardingFromSettings -> _uiState.update {
+                it.copy(
+                    showOnboarding = true,
+                    showSettings = false,
+                    onboardingReturnToSettings = action.fromSettings,
+                )
+            }
+
+            WorkspaceAction.UnmountChroot -> handleUnmountChroot()
+            is WorkspaceAction.DeleteProfile -> handleDeleteProfile(action.profileId)
             is WorkspaceAction.RespondToPermission -> handleRespondToPermission(action)
             is WorkspaceAction.ApproveDiff -> updateDiffStatus(action.diffId, DiffApprovalStatus.APPROVED)
             is WorkspaceAction.RejectDiff -> updateDiffStatus(action.diffId, DiffApprovalStatus.REJECTED)
@@ -164,6 +204,8 @@ class WorkspaceViewModel @Inject constructor(
             WorkspaceAction.CompleteOnboarding -> _uiState.update {
                 it.copy(
                     showOnboarding = false,
+                    showSettings = if (it.onboardingReturnToSettings) true else it.showSettings,
+                    onboardingReturnToSettings = false,
                     onboarding = it.onboarding.copy(isCompleted = true),
                 )
             }
@@ -182,6 +224,13 @@ class WorkspaceViewModel @Inject constructor(
             accountRepository.activeProfile.collect { activeProfile ->
                 _uiState.update { it.copy(activeProfile = activeProfile) }
                 evaluateQuotaWarning(activeProfile)
+                if (!hasAutoRefreshedQuota && _uiState.value.settings.autoRefreshQuotaOnLaunch &&
+                    activeProfile != null && activeProfile.isAuthenticated &&
+                    activeProfile.quota.updatedAtEpochMs == 0L && activeProfile.quota.remainingPercent == null
+                ) {
+                    hasAutoRefreshedQuota = true
+                    handleRefreshAllQuotas()
+                }
             }
         }
         viewModelScope.launch {
@@ -299,7 +348,10 @@ class WorkspaceViewModel @Inject constructor(
                             isStreaming = !event.isFinal,
                         )
                     }
-                    state.copy(messages = updatedMessages)
+                    syncActiveConversation(state, updatedMessages, sessionId = event.sessionId)
+                }
+                if (event.isFinal) {
+                    persistSnapshot()
                 }
             }
 
@@ -316,7 +368,10 @@ class WorkspaceViewModel @Inject constructor(
                             isStreaming = existing.isStreaming || !event.isFinal,
                         )
                     }
-                    state.copy(messages = updatedMessages)
+                    syncActiveConversation(state, updatedMessages, sessionId = event.sessionId)
+                }
+                if (event.isFinal) {
+                    persistSnapshot()
                 }
             }
 
@@ -342,7 +397,7 @@ class WorkspaceViewModel @Inject constructor(
                         }
                         existing.copy(toolCalls = updatedCalls)
                     }
-                    state.copy(messages = updatedMessages)
+                    syncActiveConversation(state, updatedMessages, sessionId = event.sessionId)
                 }
             }
 
@@ -414,10 +469,10 @@ class WorkspaceViewModel @Inject constructor(
             }
 
             is AcpEvent.SessionStateChanged -> {
+                val finalizeStreaming = event.state == AcpSessionState.READY ||
+                    event.state == AcpSessionState.ERROR ||
+                    event.state == AcpSessionState.CLOSED
                 _uiState.update { state ->
-                    val finalizeStreaming = event.state == AcpSessionState.READY ||
-                        event.state == AcpSessionState.ERROR ||
-                        event.state == AcpSessionState.CLOSED
                     val updatedMessages = if (finalizeStreaming) {
                         state.messages.map { msg ->
                             if (msg.isStreaming) msg.copy(isStreaming = false) else msg
@@ -425,27 +480,32 @@ class WorkspaceViewModel @Inject constructor(
                     } else {
                         state.messages
                     }
-                    state.copy(
-                        sessionState = event.state,
-                        messages = updatedMessages,
-                    )
+                    val synced = if (finalizeStreaming) {
+                        syncActiveConversation(state, updatedMessages, sessionId = event.sessionId)
+                    } else {
+                        state.copy(messages = updatedMessages)
+                    }
+                    synced.copy(sessionState = event.state)
+                }
+                if (finalizeStreaming) {
+                    persistSnapshot()
                 }
             }
 
             is AcpEvent.Error -> {
                 _uiState.update { state ->
-                    val nextMessages = if (!event.recoverable) {
-                        state.messages + systemMessage(
+                    if (!event.recoverable) {
+                        val nextMessages = state.messages + systemMessage(
                             sessionId = event.sessionId ?: currentSessionId(state),
                             content = "ACP Hatası (${event.code ?: "?"}): ${event.message}",
                         )
+                        syncActiveConversation(state, nextMessages).copy(errorMessage = event.message)
                     } else {
-                        state.messages
+                        state.copy(errorMessage = event.message)
                     }
-                    state.copy(
-                        messages = nextMessages,
-                        errorMessage = event.message,
-                    )
+                }
+                if (!event.recoverable) {
+                    persistSnapshot()
                 }
             }
         }
@@ -646,8 +706,9 @@ class WorkspaceViewModel @Inject constructor(
             content = "Önceki $compactedCount mesaj bağlam tasarrufu için sıkıştırıldı (`/compact`).",
         )
         _uiState.update { state ->
-            state.copy(messages = listOf(summaryMsg) + currentMessages.takeLast(keepCount))
+            syncActiveConversation(state, listOf(summaryMsg) + currentMessages.takeLast(keepCount))
         }
+        persistSnapshot()
     }
 
     private fun sendPromptToAcp(prompt: String, attachments: List<String>) {
@@ -662,8 +723,13 @@ class WorkspaceViewModel @Inject constructor(
             isStreaming = false,
         )
         _uiState.update { state ->
-            state.copy(messages = state.messages + userMessage)
+            syncActiveConversation(
+                state = state,
+                newMessages = state.messages + userMessage,
+                userPromptForAutoTitle = prompt,
+            )
         }
+        persistSnapshot()
 
         viewModelScope.launch {
             runSuspendCatching {
@@ -700,7 +766,9 @@ class WorkspaceViewModel @Inject constructor(
             thinkingEffort = state.selectedEffort,
             permissionMode = state.permissionMode,
             ideMcpPort = mcpPort,
-            processPerSession = true,
+            processPerSession = state.settings.acpProcessPerSession,
+            resumeConversationId = state.activeConversation?.sessionId,
+            sandboxed = state.settings.acpSandboxEnabled,
         )
         return acpClient.startSession(config).getOrThrow()
     }
@@ -984,12 +1052,35 @@ class WorkspaceViewModel @Inject constructor(
     private fun handleSelectProject(projectId: String) {
         val target = _uiState.value.projects.firstOrNull { it.id == projectId } ?: return
         _uiState.update { state ->
-            state.copy(
-                activeProject = target,
-                mentionSuggestions = buildMentionSuggestions(target),
-            )
+            val currentConv = state.activeConversation
+            if (currentConv != null && currentConv.projectId == target.id) {
+                state.copy(
+                    activeProject = target,
+                    expandedProjectIds = state.expandedProjectIds + target.id,
+                    mentionSuggestions = buildMentionSuggestions(target),
+                )
+            } else {
+                val existingConv = state.conversations
+                    .filter { it.projectId == target.id }
+                    .maxByOrNull { it.updatedAtEpochMs }
+                val nextConv = existingConv ?: newEmptyConversation(target.id)
+                val updatedConversations = if (existingConv != null) {
+                    state.conversations
+                } else {
+                    listOf(nextConv) + state.conversations
+                }
+                state.copy(
+                    activeProject = target,
+                    conversations = updatedConversations,
+                    activeConversationId = nextConv.id,
+                    messages = nextConv.messages,
+                    expandedProjectIds = state.expandedProjectIds + target.id,
+                    mentionSuggestions = buildMentionSuggestions(target),
+                )
+            }
         }
         handleSelectPermissionMode(target.defaultPermissionMode)
+        persistSnapshot()
     }
 
     private fun handleCreateProject(action: WorkspaceAction.CreateProject) {
@@ -1004,12 +1095,366 @@ class WorkspaceViewModel @Inject constructor(
             defaultPermissionMode = action.defaultPermissionMode,
             lastOpenedAtEpochMs = System.currentTimeMillis(),
         )
+        val initialConversation = newEmptyConversation(newProject.id)
         _uiState.update { state ->
             state.copy(
                 projects = state.projects + newProject,
                 activeProject = newProject,
+                conversations = listOf(initialConversation) + state.conversations,
+                activeConversationId = initialConversation.id,
+                messages = emptyList(),
+                expandedProjectIds = state.expandedProjectIds + newProject.id,
                 mentionSuggestions = buildMentionSuggestions(newProject),
             )
+        }
+        persistSnapshot()
+    }
+
+    private fun handleRenameProject(projectId: String, newName: String) {
+        val cleanName = newName.trim()
+        if (cleanName.isEmpty()) return
+        _uiState.update { state ->
+            val updatedProjects = state.projects.map { project ->
+                if (project.id == projectId) project.copy(name = cleanName) else project
+            }
+            val updatedActive = if (state.activeProject.id == projectId) {
+                state.activeProject.copy(name = cleanName)
+            } else {
+                state.activeProject
+            }
+            state.copy(
+                projects = updatedProjects,
+                activeProject = updatedActive,
+                mentionSuggestions = buildMentionSuggestions(updatedActive),
+            )
+        }
+        persistSnapshot()
+    }
+
+    private fun handleDeleteProject(projectId: String) {
+        _uiState.update { state ->
+            if (state.projects.none { it.id == projectId }) return@update state
+            val remainingProjects = state.projects
+                .filterNot { it.id == projectId }
+                .ifEmpty { listOf(defaultProjects().first()) }
+            val remainingConversations = state.conversations.filterNot { it.projectId == projectId }
+            val updatedExpanded = state.expandedProjectIds - projectId
+
+            if (state.activeProject.id != projectId) {
+                state.copy(
+                    projects = remainingProjects,
+                    conversations = remainingConversations,
+                    expandedProjectIds = updatedExpanded,
+                )
+            } else {
+                val nextProject = remainingProjects.first()
+                val existingConv = remainingConversations
+                    .filter { it.projectId == nextProject.id }
+                    .maxByOrNull { it.updatedAtEpochMs }
+                val nextConv = existingConv ?: newEmptyConversation(nextProject.id)
+                val finalConversations = if (existingConv != null) {
+                    remainingConversations
+                } else {
+                    listOf(nextConv) + remainingConversations
+                }
+                state.copy(
+                    projects = remainingProjects,
+                    activeProject = nextProject,
+                    conversations = finalConversations,
+                    activeConversationId = nextConv.id,
+                    messages = nextConv.messages,
+                    expandedProjectIds = updatedExpanded + nextProject.id,
+                    mentionSuggestions = buildMentionSuggestions(nextProject),
+                )
+            }
+        }
+        persistSnapshot()
+    }
+
+    private fun handleToggleProjectExpanded(projectId: String) {
+        _uiState.update { state ->
+            val next = if (projectId in state.expandedProjectIds) {
+                state.expandedProjectIds - projectId
+            } else {
+                state.expandedProjectIds + projectId
+            }
+            state.copy(expandedProjectIds = next)
+        }
+    }
+
+    private fun handleCreateConversation(projectId: String?, title: String?) {
+        val currentState = _uiState.value
+        val activeSessionId = currentState.activeSession?.sessionId
+        if (activeSessionId != null &&
+            currentState.sessionState != AcpSessionState.DISCONNECTED &&
+            currentState.sessionState != AcpSessionState.CLOSED
+        ) {
+            viewModelScope.launch {
+                runSuspendCatching { acpClient.cancelSession(activeSessionId) }
+            }
+        }
+
+        val targetProject = projectId?.let { id ->
+            currentState.projects.firstOrNull { it.id == id }
+        } ?: currentState.activeProject
+
+        val cleanTitle = title?.trim()?.ifBlank { null } ?: WorkspaceConversation.DEFAULT_TITLE
+        val newConv = newEmptyConversation(
+            projectId = targetProject.id,
+            title = cleanTitle,
+        )
+
+        _uiState.update { state ->
+            state.copy(
+                activeProject = targetProject,
+                conversations = listOf(newConv) + state.conversations,
+                activeConversationId = newConv.id,
+                messages = emptyList(),
+                expandedProjectIds = state.expandedProjectIds + targetProject.id,
+                mentionSuggestions = buildMentionSuggestions(targetProject),
+            )
+        }
+        persistSnapshot()
+    }
+
+    private fun handleSelectConversation(conversationId: String) {
+        val current = _uiState.value
+        val target = current.conversations.firstOrNull { it.id == conversationId } ?: return
+        val targetProject = current.projects.firstOrNull { it.id == target.projectId } ?: current.activeProject
+        val projectChanged = targetProject.id != current.activeProject.id
+
+        _uiState.update { state ->
+            state.copy(
+                activeProject = targetProject,
+                activeConversationId = target.id,
+                messages = target.messages,
+                expandedProjectIds = state.expandedProjectIds + targetProject.id,
+                mentionSuggestions = buildMentionSuggestions(targetProject),
+            )
+        }
+        if (projectChanged) {
+            handleSelectPermissionMode(targetProject.defaultPermissionMode)
+        }
+        persistSnapshot()
+    }
+
+    private fun handleDeleteConversation(conversationId: String) {
+        _uiState.update { state ->
+            val target = state.conversations.firstOrNull { it.id == conversationId } ?: return@update state
+            val remaining = state.conversations.filterNot { it.id == conversationId }
+
+            if (state.activeConversationId != conversationId) {
+                state.copy(conversations = remaining)
+            } else {
+                val nextInProject = remaining
+                    .filter { it.projectId == target.projectId }
+                    .maxByOrNull { it.updatedAtEpochMs }
+                if (nextInProject != null) {
+                    state.copy(
+                        conversations = remaining,
+                        activeConversationId = nextInProject.id,
+                        messages = nextInProject.messages,
+                    )
+                } else {
+                    val fresh = newEmptyConversation(target.projectId)
+                    state.copy(
+                        conversations = listOf(fresh) + remaining,
+                        activeConversationId = fresh.id,
+                        messages = emptyList(),
+                    )
+                }
+            }
+        }
+        persistSnapshot()
+    }
+
+    private fun handleRenameConversation(conversationId: String, newTitle: String) {
+        val cleanTitle = newTitle.trim()
+        if (cleanTitle.isEmpty()) return
+        val now = System.currentTimeMillis()
+        _uiState.update { state ->
+            state.copy(
+                conversations = state.conversations.map { conv ->
+                    if (conv.id == conversationId) {
+                        conv.copy(title = cleanTitle, updatedAtEpochMs = now)
+                    } else {
+                        conv
+                    }
+                },
+            )
+        }
+        persistSnapshot()
+    }
+
+    private fun handleTogglePinConversation(conversationId: String) {
+        _uiState.update { state ->
+            state.copy(
+                conversations = state.conversations.map { conv ->
+                    if (conv.id == conversationId) conv.copy(isPinned = !conv.isPinned) else conv
+                },
+            )
+        }
+        persistSnapshot()
+    }
+
+    private fun handleOpenSettings(category: SettingsCategory) {
+        _uiState.update {
+            it.copy(
+                showSettings = true,
+                selectedSettingsCategory = category,
+            )
+        }
+        if (category == SettingsCategory.ACCOUNTS_QUOTA) {
+            maybeAutoRefreshActiveProfileQuota()
+        }
+    }
+
+    private fun handleSelectSettingsCategory(category: SettingsCategory) {
+        _uiState.update { it.copy(selectedSettingsCategory = category) }
+        if (category == SettingsCategory.ACCOUNTS_QUOTA) {
+            maybeAutoRefreshActiveProfileQuota()
+        }
+    }
+
+    private fun handleUpdateSettings(
+        transform: (com.antigravity.mobile.feature.workspace.model.AppSettings) -> com.antigravity.mobile.feature.workspace.model.AppSettings,
+    ) {
+        _uiState.update { state ->
+            state.copy(settings = transform(state.settings))
+        }
+        persistSnapshot()
+    }
+
+    private fun handleOpenQuotaSheet() {
+        _uiState.update { it.copy(showQuotaSheet = true) }
+        maybeAutoRefreshActiveProfileQuota()
+    }
+
+    private fun handleDismissOnboarding() {
+        _uiState.update { state ->
+            state.copy(
+                showOnboarding = false,
+                showSettings = if (state.onboardingReturnToSettings) true else state.showSettings,
+                onboardingReturnToSettings = false,
+            )
+        }
+    }
+
+    private fun maybeAutoRefreshActiveProfileQuota(state: WorkspaceUiState = _uiState.value) {
+        val active = state.activeProfile ?: return
+        if (!active.isAuthenticated) return
+        if (active.quota.updatedAtEpochMs == 0L && active.quota.remainingPercent == null && !state.isRefreshingQuota) {
+            handleRefreshAllQuotas()
+        }
+    }
+
+    private fun handleRefreshAllQuotas() {
+        if (_uiState.value.isRefreshingQuota) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isRefreshingQuota = true) }
+            try {
+                val snapshot = _uiState.value
+                val targets = snapshot.profiles
+                    .filter { it.isAuthenticated }
+                    .ifEmpty { listOfNotNull(snapshot.activeProfile) }
+                if (targets.isEmpty()) return@launch
+
+                var successCount = 0
+                var lastError: String? = null
+                for (profile in targets) {
+                    runSuspendCatching {
+                        accountRepository.refreshUsage(profile.id).getOrThrow()
+                    }.onSuccess { quota ->
+                        successCount++
+                        val updatedProfile = profile.copy(quota = quota)
+                        _uiState.update { state ->
+                            state.copy(
+                                profiles = state.profiles.map { p ->
+                                    if (p.id == profile.id) p.copy(quota = quota) else p
+                                },
+                                activeProfile = if (state.activeProfile?.id == profile.id) {
+                                    state.activeProfile.copy(quota = quota)
+                                } else {
+                                    state.activeProfile
+                                },
+                            )
+                        }
+                        if (_uiState.value.activeProfile?.id == profile.id) {
+                            evaluateQuotaWarning(updatedProfile)
+                        }
+                    }.onFailure { error ->
+                        lastError = error.message
+                    }
+                }
+                if (successCount == 0 && lastError != null) {
+                    _uiState.update { it.copy(errorMessage = lastError ?: "Kota bilgileri yenilenemedi") }
+                }
+            } finally {
+                _uiState.update { it.copy(isRefreshingQuota = false) }
+            }
+        }
+    }
+
+    private fun handleDeleteProfile(profileId: String) {
+        viewModelScope.launch {
+            runSuspendCatching {
+                if (_uiState.value.activeProfile?.id == profileId) {
+                    _uiState.value.activeSession?.sessionId?.let { id ->
+                        acpClient.cancelSession(id)
+                    }
+                }
+                accountRepository.deleteProfile(profileId).getOrThrow()
+            }.onSuccess {
+                _uiState.update { state ->
+                    val remaining = state.profiles.filterNot { it.id == profileId }
+                    val nextActive = if (state.activeProfile?.id == profileId) {
+                        remaining.firstOrNull()
+                    } else {
+                        state.activeProfile
+                    }
+                    state.copy(
+                        profiles = remaining,
+                        activeProfile = nextActive,
+                        authBanner = if (state.authBanner?.profileId == profileId) null else state.authBanner,
+                        quotaWarning = if (state.quotaWarning?.currentProfile?.id == profileId) null else state.quotaWarning,
+                    )
+                }
+                appendSystemMessage("Google profili silindi.")
+            }.onFailure { error ->
+                _uiState.update { it.copy(errorMessage = error.message ?: "Profil silinemedi") }
+            }
+        }
+    }
+
+    private fun handleUnmountChroot() {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(onboarding = it.onboarding.copy(isBusy = true, errorMessage = null))
+            }
+            runSuspendCatching {
+                chrootManager.unmountSafely(force = false).getOrThrow()
+            }.onSuccess {
+                _uiState.update { state ->
+                    state.copy(
+                        onboarding = state.onboarding.copy(
+                            isBusy = false,
+                            statusMessage = "ARM64 chroot güvenli şekilde ayrıldı",
+                            errorMessage = null,
+                        ),
+                    )
+                }
+            }.onFailure { error ->
+                val msg = error.message ?: "Chroot ayrılamadı"
+                _uiState.update { state ->
+                    state.copy(
+                        errorMessage = msg,
+                        onboarding = state.onboarding.copy(
+                            isBusy = false,
+                            errorMessage = msg,
+                        ),
+                    )
+                }
+            }
         }
     }
 
@@ -1300,15 +1745,160 @@ class WorkspaceViewModel @Inject constructor(
         }
     }
 
-    private fun appendSystemMessage(content: String) {
-        _uiState.update { state ->
-            state.copy(
-                messages = state.messages + systemMessage(
-                    sessionId = currentSessionId(state),
-                    content = content,
-                ),
+    private fun hydrateFromLocalStore() {
+        viewModelScope.launch {
+            val snapshot = runSuspendCatching { localStore.load() }.getOrNull()
+            _uiState.update { state ->
+                if (snapshot != null) {
+                    val restoredProjects = snapshot.projects.ifEmpty { state.projects }
+                    val restoredActiveProject = snapshot.activeProjectId
+                        ?.let { id -> restoredProjects.firstOrNull { it.id == id } }
+                        ?: restoredProjects.first()
+                    val validProjectIds = restoredProjects.map { it.id }.toSet()
+                    val restoredConversations = snapshot.conversations.filter { it.projectId in validProjectIds }
+                    val activeConv = snapshot.activeConversationId
+                        ?.let { id -> restoredConversations.firstOrNull { it.id == id } }
+                        ?: restoredConversations
+                            .filter { it.projectId == restoredActiveProject.id }
+                            .maxByOrNull { it.updatedAtEpochMs }
+                        ?: newEmptyConversation(restoredActiveProject.id)
+                    val finalConversations = if (restoredConversations.any { it.id == activeConv.id }) {
+                        restoredConversations
+                    } else {
+                        listOf(activeConv) + restoredConversations
+                    }
+                    val hydratedMessages = if (state.messages.isNotEmpty()) state.messages else activeConv.messages
+                    state.copy(
+                        projects = restoredProjects,
+                        activeProject = restoredActiveProject,
+                        conversations = finalConversations.map { conv ->
+                            if (conv.id == activeConv.id) conv.copy(messages = hydratedMessages) else conv
+                        },
+                        activeConversationId = activeConv.id,
+                        expandedProjectIds = state.expandedProjectIds + restoredActiveProject.id,
+                        messages = hydratedMessages,
+                        settings = snapshot.settings,
+                        mentionSuggestions = buildMentionSuggestions(restoredActiveProject),
+                    )
+                } else if (state.conversations.isEmpty()) {
+                    val initialConv = newEmptyConversation(
+                        projectId = state.activeProject.id,
+                        messages = state.messages,
+                    )
+                    state.copy(
+                        conversations = listOf(initialConv),
+                        activeConversationId = initialConv.id,
+                        expandedProjectIds = state.expandedProjectIds + state.activeProject.id,
+                    )
+                } else {
+                    state
+                }
+            }
+
+            val current = _uiState.value
+            if (current.settings.autoRefreshQuotaOnLaunch) {
+                maybeAutoRefreshActiveProfileQuota(current)
+            }
+        }
+    }
+
+    private fun persistSnapshot(state: WorkspaceUiState = _uiState.value) {
+        val snapshot = WorkspaceSnapshot(
+            projects = state.projects,
+            conversations = state.conversations,
+            activeProjectId = state.activeProject.id,
+            activeConversationId = state.activeConversationId,
+            settings = state.settings,
+        )
+        viewModelScope.launch {
+            runSuspendCatching {
+                localStore.save(snapshot)
+            }
+        }
+    }
+
+    private fun newEmptyConversation(
+        projectId: String,
+        title: String = WorkspaceConversation.DEFAULT_TITLE,
+        messages: List<WorkspaceChatMessage> = emptyList(),
+    ): WorkspaceConversation {
+        val now = System.currentTimeMillis()
+        return WorkspaceConversation(
+            id = "conv-${UUID.randomUUID().toString().take(8)}",
+            projectId = projectId,
+            title = title,
+            messages = messages,
+            isPinned = false,
+            createdAtEpochMs = now,
+            updatedAtEpochMs = now,
+        )
+    }
+
+    private fun syncActiveConversation(
+        state: WorkspaceUiState,
+        newMessages: List<WorkspaceChatMessage>,
+        sessionId: String? = state.activeSession?.sessionId,
+        userPromptForAutoTitle: String? = null,
+    ): WorkspaceUiState {
+        val now = System.currentTimeMillis()
+        val existing = state.activeConversation
+        if (existing != null) {
+            val nextTitle = if (userPromptForAutoTitle != null &&
+                (existing.title.isBlank() || existing.title == WorkspaceConversation.DEFAULT_TITLE)
+            ) {
+                deriveConversationTitle(userPromptForAutoTitle)
+            } else {
+                existing.title
+            }
+            val updated = existing.copy(
+                title = nextTitle,
+                sessionId = sessionId ?: existing.sessionId,
+                messages = newMessages,
+                updatedAtEpochMs = now,
+            )
+            val updatedList = state.conversations.map { conv ->
+                if (conv.id == existing.id) updated else conv
+            }
+            return state.copy(
+                messages = newMessages,
+                conversations = updatedList,
             )
         }
+
+        val initialTitle = userPromptForAutoTitle?.let(::deriveConversationTitle)
+            ?: WorkspaceConversation.DEFAULT_TITLE
+        val created = WorkspaceConversation(
+            id = "conv-${UUID.randomUUID().toString().take(8)}",
+            projectId = state.activeProject.id,
+            title = initialTitle,
+            sessionId = sessionId,
+            messages = newMessages,
+            isPinned = false,
+            createdAtEpochMs = now,
+            updatedAtEpochMs = now,
+        )
+        return state.copy(
+            messages = newMessages,
+            conversations = listOf(created) + state.conversations,
+            activeConversationId = created.id,
+        )
+    }
+
+    private fun deriveConversationTitle(prompt: String): String {
+        val normalized = prompt.replace(Regex("\\s+"), " ").trim()
+        if (normalized.isEmpty()) return WorkspaceConversation.DEFAULT_TITLE
+        return if (normalized.length <= 42) normalized else "${normalized.take(41).trimEnd()}…"
+    }
+
+    private fun appendSystemMessage(content: String) {
+        _uiState.update { state ->
+            val updatedMessages = state.messages + systemMessage(
+                sessionId = currentSessionId(state),
+                content = content,
+            )
+            syncActiveConversation(state, updatedMessages)
+        }
+        persistSnapshot()
     }
 
     private fun systemMessage(sessionId: String, content: String) = WorkspaceChatMessage(

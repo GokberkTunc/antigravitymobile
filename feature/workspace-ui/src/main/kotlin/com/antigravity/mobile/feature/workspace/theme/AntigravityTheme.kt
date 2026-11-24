@@ -15,66 +15,85 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.antigravity.mobile.feature.workspace.model.AppThemeMode
 
+/**
+ * Antigravity Desktop-inspired obsidian & vibrant cyan/indigo/emerald design tokens.
+ */
 object AntigravityPalette {
-    val DeepSpace = Color(0xFF0A0D14)
-    val SurfaceDark = Color(0xFF111622)
-    val SurfaceElevated = Color(0xFF171F30)
-    val SurfaceVariantDark = Color(0xFF1E283D)
-    val OutlineDark = Color(0xFF2C3A56)
-    val NeonCyan = Color(0xFF56CCF2)
-    val HydrogenViolet = Color(0xFFA78BFA)
+    val DeepSpace = Color(0xFF090C12)
+    val SurfaceDark = Color(0xFF0F141F)
+    val SurfaceElevated = Color(0xFF151C2B)
+    val SurfaceVariantDark = Color(0xFF1D273B)
+    val OutlineDark = Color(0xFF233047)
+    val BorderHairline = Color(0xFF233047)
+    val NeonCyan = Color(0xFF38BDF8)
+    val HydrogenViolet = Color(0xFF818CF8)
     val CarbonTeal = Color(0xFF2DD4BF)
-    val SuccessGreen = Color(0xFF22C55E)
-    val WarningAmber = Color(0xFFF59E0B)
-    val CriticalRed = Color(0xFFEF4444)
-    val DiffAddBg = Color(0xFF0F2C1C)
-    val DiffAddFg = Color(0xFF86EFAC)
-    val DiffRemoveBg = Color(0xFF33151B)
+    val SuccessGreen = Color(0xFF34D399)
+    val WarningAmber = Color(0xFFFBBF24)
+    val CriticalRed = Color(0xFFF87171)
+    val DiffAddBg = Color(0xFF0D281E)
+    val DiffAddFg = Color(0xFF6EE7B7)
+    val DiffRemoveBg = Color(0xFF31151B)
     val DiffRemoveFg = Color(0xFFFCA5A5)
-    val CodeBlockBg = Color(0xFF0D1119)
-    val TextPrimary = Color(0xFFE8EEF8)
-    val TextSecondary = Color(0xFF9BA9BF)
+    val CodeBlockBg = Color(0xFF0B0F17)
+    val TextPrimary = Color(0xFFEDF2FA)
+    val TextSecondary = Color(0xFF94A3B8)
+    val TextMuted = Color(0xFF64748B)
 }
 
 val AntigravityDarkColorScheme = darkColorScheme(
     primary = AntigravityPalette.NeonCyan,
-    onPrimary = Color(0xFF001F2A),
-    primaryContainer = Color(0xFF0C364A),
-    onPrimaryContainer = Color(0xFFC4EEFF),
+    onPrimary = Color(0xFF031B26),
+    primaryContainer = Color(0xFF0C3147),
+    onPrimaryContainer = Color(0xFFBAE6FD),
     secondary = AntigravityPalette.HydrogenViolet,
-    onSecondary = Color(0xFF1D0E42),
-    secondaryContainer = Color(0xFF2F2157),
-    onSecondaryContainer = Color(0xFFE5DCFF),
-    tertiary = AntigravityPalette.CarbonTeal,
-    onTertiary = Color(0xFF00201C),
+    onSecondary = Color(0xFF151442),
+    secondaryContainer = Color(0xFF25295C),
+    onSecondaryContainer = Color(0xFFE0E7FF),
+    tertiary = AntigravityPalette.SuccessGreen,
+    onTertiary = Color(0xFF032117),
+    tertiaryContainer = Color(0xFF0D3326),
+    onTertiaryContainer = Color(0xFFA7F3D0),
     background = AntigravityPalette.DeepSpace,
     onBackground = AntigravityPalette.TextPrimary,
     surface = AntigravityPalette.SurfaceDark,
     onSurface = AntigravityPalette.TextPrimary,
     surfaceVariant = AntigravityPalette.SurfaceVariantDark,
     onSurfaceVariant = AntigravityPalette.TextSecondary,
+    surfaceContainerLowest = AntigravityPalette.DeepSpace,
+    surfaceContainerLow = AntigravityPalette.SurfaceDark,
+    surfaceContainer = AntigravityPalette.SurfaceElevated,
+    surfaceContainerHigh = AntigravityPalette.SurfaceVariantDark,
+    surfaceContainerHighest = Color(0xFF243149),
     outline = AntigravityPalette.OutlineDark,
+    outlineVariant = Color(0xFF1B263B),
     error = AntigravityPalette.CriticalRed,
-    onError = Color.White,
-    errorContainer = Color(0xFF471317),
-    onErrorContainer = Color(0xFFFFDAD9),
+    onError = Color(0xFF2D0A0E),
+    errorContainer = Color(0xFF47151C),
+    onErrorContainer = Color(0xFFFEE2E2),
 )
 
 val AntigravityLightColorScheme = lightColorScheme(
-    primary = Color(0xFF00658A),
+    primary = Color(0xFF0284C7),
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFC5E7FF),
-    onPrimaryContainer = Color(0xFF001E2C),
-    secondary = Color(0xFF5D46B8),
+    primaryContainer = Color(0xFFE0F2FE),
+    onPrimaryContainer = Color(0xFF0C4A6E),
+    secondary = Color(0xFF4F46E5),
     onSecondary = Color.White,
-    background = Color(0xFFF7F9FC),
-    onBackground = Color(0xFF111827),
+    secondaryContainer = Color(0xFFE0E7FF),
+    onSecondaryContainer = Color(0xFF1E1B4B),
+    tertiary = Color(0xFF059669),
+    onTertiary = Color.White,
+    background = Color(0xFFF8FAFC),
+    onBackground = Color(0xFF0F172A),
     surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF111827),
-    surfaceVariant = Color(0xFFE6ECF5),
-    onSurfaceVariant = Color(0xFF4B5563),
+    onSurface = Color(0xFF0F172A),
+    surfaceVariant = Color(0xFFE2E8F0),
+    onSurfaceVariant = Color(0xFF475569),
     outline = Color(0xFFCBD5E1),
+    outlineVariant = Color(0xFFE2E8F0),
     error = Color(0xFFDC2626),
     onError = Color.White,
 )
@@ -84,11 +103,13 @@ val AntigravityTypography = Typography(
         fontWeight = FontWeight.SemiBold,
         fontSize = 20.sp,
         lineHeight = 26.sp,
+        letterSpacing = (-0.2).sp,
     ),
     titleMedium = TextStyle(
         fontWeight = FontWeight.SemiBold,
         fontSize = 16.sp,
         lineHeight = 22.sp,
+        letterSpacing = (-0.1).sp,
     ),
     titleSmall = TextStyle(
         fontWeight = FontWeight.Medium,
@@ -124,16 +145,23 @@ val AntigravityTypography = Typography(
 )
 
 /**
- * Antigravity Mobile Material 3 theme — dark-theme-first with Dynamic Color on Android 12+.
+ * Antigravity Mobile Material 3 theme — obsidian/cyan dark-theme-first with optional Dynamic Color
+ * and explicit [AppThemeMode] support.
  */
 @Composable
 fun AntigravityTheme(
     darkTheme: Boolean = true,
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     followSystemDarkTheme: Boolean = false,
+    themeMode: AppThemeMode? = null,
     content: @Composable () -> Unit,
 ) {
-    val useDark = if (followSystemDarkTheme) isSystemInDarkTheme() else darkTheme
+    val useDark = when (themeMode) {
+        AppThemeMode.DARK -> true
+        AppThemeMode.LIGHT -> false
+        AppThemeMode.SYSTEM -> isSystemInDarkTheme()
+        null -> if (followSystemDarkTheme) isSystemInDarkTheme() else darkTheme
+    }
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val context = LocalContext.current
