@@ -1,0 +1,26 @@
+# Android & Gradle
+*.iml
+.gradle/
+local.properties
+.idea/
+build/
+**/build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.ap_
+*.aab
+*.dex
+
+# Signing & Secrets
+*.jks
+*.keystore
+google-services.json
+.env
+.env.*
+
+# Antigravity / Worktrees / OS
+.worktrees/
+.DS_Store
+Thumbs.db
