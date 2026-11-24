@@ -21,14 +21,19 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -77,6 +82,7 @@ class KtorAndroidMcpServer(
     private val prettyJson = Json { prettyPrint = true; encodeDefaults = true }
 
     private var serverEngine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
+    private var serverScope: CoroutineScope? = null
     private var activeEndpoint: McpEndpoint? = null
 
     private val _health = MutableStateFlow(
@@ -120,8 +126,10 @@ class KtorAndroidMcpServer(
             port
         }
 
+        val ownedScope = CoroutineScope(SupervisorJob() + ioDispatcher)
         val engine = withContext(ioDispatcher) {
             createAndStartServer(
+                scope = ownedScope,
                 targetPort = targetPort,
                 bearerToken = bearerToken,
             )
@@ -141,6 +149,7 @@ class KtorAndroidMcpServer(
             path = MCP_PATH,
         )
 
+        serverScope = ownedScope
         serverEngine = engine
         activeEndpoint = endpoint
         _health.value = McpServerHealth(
@@ -162,10 +171,11 @@ class KtorAndroidMcpServer(
      * would otherwise attach the long-running server job as a child of a transient `withContext` scope).
      */
     private fun createAndStartServer(
+        scope: CoroutineScope,
         targetPort: Int,
         bearerToken: String,
     ): EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration> {
-        val created = embeddedServer(
+        val created = scope.embeddedServer(
             factory = CIO,
             port = targetPort,
             host = LOOPBACK_HOST,
@@ -190,6 +200,7 @@ class KtorAndroidMcpServer(
                     val snapshot = _health.value.copy(
                         totalCallsHandled = totalCallsHandled.get(),
                     )
+                    call.response.headers.append(HttpHeaders.Connection, "close")
                     call.respondText(
                         text = ContractsJson.encodeToString(McpServerHealth.serializer(), snapshot),
                         contentType = ContentType.Application.Json,
@@ -200,6 +211,7 @@ class KtorAndroidMcpServer(
                 post(MCP_PATH) {
                     val rawBody = call.receiveText()
                     val (status, responseBody) = handleJsonRpcRequest(rawBody)
+                    call.response.headers.append(HttpHeaders.Connection, "close")
                     call.respondText(
                         text = responseBody,
                         contentType = ContentType.Application.Json,
@@ -218,18 +230,29 @@ class KtorAndroidMcpServer(
 
     private suspend fun stopLocked() {
         val engine = serverEngine
+        val scope = serverScope
         serverEngine = null
+        serverScope = null
         activeEndpoint = null
         if (engine != null) {
-            withContext(ioDispatcher) {
-                try {
-                    engine.stop(gracePeriodMillis = 200L, timeoutMillis = 1_500L)
-                } catch (ce: CancellationException) {
-                    throw ce
-                } catch (_: Throwable) {
-                }
+            val stopped = CompletableDeferred<Unit>()
+            val shutdownThread = Thread(
+                {
+                    try {
+                        engine.stop(gracePeriodMillis = 50L, timeoutMillis = 300L)
+                    } catch (_: Throwable) {
+                    } finally {
+                        stopped.complete(Unit)
+                    }
+                },
+                "ktor-mcp-shutdown",
+            ).apply { isDaemon = true }
+            shutdownThread.start()
+            withTimeoutOrNull(1_500L) {
+                stopped.await()
             }
         }
+        scope?.cancel()
         _health.value = _health.value.copy(
             isRunning = false,
             endpointPort = null,
