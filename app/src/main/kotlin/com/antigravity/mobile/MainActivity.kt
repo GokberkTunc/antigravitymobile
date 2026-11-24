@@ -84,9 +84,12 @@ class MainActivity : ComponentActivity() {
         handleOAuthCallbackIntent(intent)
 
         setContent {
-            AntigravityTheme {
-                val uiState by workspaceViewModel.uiState.collectAsStateWithLifecycle()
+            val uiState by workspaceViewModel.uiState.collectAsStateWithLifecycle()
 
+            AntigravityTheme(
+                themeMode = uiState.settings.themeMode,
+                dynamicColor = uiState.settings.useDynamicColor,
+            ) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     AntigravityWorkspaceRoute(
                         modifier = Modifier.weight(1f),

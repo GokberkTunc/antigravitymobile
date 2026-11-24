@@ -2,6 +2,7 @@ package com.antigravity.mobile.feature.workspace.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
@@ -21,6 +22,8 @@ import com.antigravity.mobile.feature.workspace.ui.chat.ConversationScreen
 import com.antigravity.mobile.feature.workspace.ui.drawer.WorkspaceDrawerSheet
 import com.antigravity.mobile.feature.workspace.ui.onboarding.OnboardingScreen
 import com.antigravity.mobile.feature.workspace.ui.overview.OverviewBottomSheet
+import com.antigravity.mobile.feature.workspace.ui.settings.QuotaDetailBottomSheet
+import com.antigravity.mobile.feature.workspace.ui.settings.SettingsScreen
 import com.antigravity.mobile.feature.workspace.viewmodel.WorkspaceViewModel
 import kotlinx.coroutines.launch
 
@@ -53,7 +56,10 @@ fun AntigravityWorkspaceRoute(
         viewModel.onAction(WorkspaceAction.ConsumeChromeCustomTabUrl)
     }
 
-    AntigravityTheme {
+    AntigravityTheme(
+        themeMode = state.settings.themeMode,
+        dynamicColor = state.settings.useDynamicColor,
+    ) {
         AntigravityWorkspaceScaffold(
             state = state,
             onAction = viewModel::onAction,
@@ -77,8 +83,27 @@ fun AntigravityWorkspaceScaffold(
         return
     }
 
+    if (state.showSettings) {
+        SettingsScreen(
+            state = state,
+            onAction = onAction,
+            modifier = modifier,
+        )
+        return
+    }
+
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
+
+    BackHandler(enabled = drawerState.isOpen && !state.showSettings && !state.showOnboarding) {
+        coroutineScope.launch { drawerState.close() }
+    }
+    BackHandler(enabled = state.isOverviewSheetVisible) {
+        onAction(WorkspaceAction.CloseOverviewSheet)
+    }
+    BackHandler(enabled = state.showQuotaSheet) {
+        onAction(WorkspaceAction.CloseQuotaSheet)
+    }
 
     ModalNavigationDrawer(
         modifier = modifier,
@@ -103,6 +128,11 @@ fun AntigravityWorkspaceScaffold(
     }
 
     OverviewBottomSheet(
+        state = state,
+        onAction = onAction,
+    )
+
+    QuotaDetailBottomSheet(
         state = state,
         onAction = onAction,
     )
