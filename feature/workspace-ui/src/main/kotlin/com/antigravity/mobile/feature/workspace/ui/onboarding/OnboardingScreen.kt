@@ -27,6 +27,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -45,7 +46,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -56,7 +56,7 @@ import com.antigravity.mobile.contracts.RootProviderType
 import com.antigravity.mobile.feature.workspace.model.RootfsSourceOption
 import com.antigravity.mobile.feature.workspace.model.WorkspaceAction
 import com.antigravity.mobile.feature.workspace.model.WorkspaceUiState
-import com.antigravity.mobile.feature.workspace.theme.AntigravityPalette
+import com.antigravity.mobile.feature.workspace.theme.LocalAntigravityColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -66,6 +66,8 @@ fun OnboardingScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val extColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
     val onboarding = state.onboarding
 
     var profileName by remember { mutableStateOf("Ana Google Hesabım") }
@@ -73,38 +75,46 @@ fun OnboardingScreen(
     var desktopImportPath by remember { mutableStateOf("/sdcard/Download/gemini-profile.tar.gz") }
 
     BackHandler(enabled = true) {
-        onAction(WorkspaceAction.DismissOnboarding)
+        onAction(WorkspaceAction.NavigateBack)
     }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = colorScheme.background,
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-                navigationIcon = {
-                    IconButton(onClick = { onAction(WorkspaceAction.DismissOnboarding) }) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Geri",
-                        )
-                    }
-                },
-                title = {
-                    Column {
-                        Text(
-                            text = "Antigravity Kurulum Sihirbazı",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text(
-                            text = "KernelSU / Magisk • ARM64 Glibc Chroot • Google OAuth",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
-            )
+            Column {
+                TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = colorScheme.surface,
+                        titleContentColor = colorScheme.onSurface,
+                        navigationIconContentColor = colorScheme.onSurface,
+                    ),
+                    navigationIcon = {
+                        IconButton(onClick = { onAction(WorkspaceAction.NavigateBack) }) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Geri",
+                            )
+                        }
+                    },
+                    title = {
+                        Column {
+                            Text(
+                                text = "Antigravity Kurulum Sihirbazı",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = colorScheme.onSurface,
+                            )
+                            Text(
+                                text = "KernelSU / Magisk • ARM64 Glibc Chroot • Google OAuth",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                )
+                HorizontalDivider(color = extColors.cardBorder)
+            }
         },
     ) { innerPadding ->
         Column(
@@ -118,13 +128,14 @@ fun OnboardingScreen(
             if (onboarding.statusMessage != null) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                    color = colorScheme.primaryContainer.copy(alpha = if (extColors.isDark) 0.55f else 0.85f),
+                    border = BorderStroke(1.dp, colorScheme.primary.copy(alpha = if (extColors.isDark) 0.35f else 0.25f)),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
                         text = onboarding.statusMessage,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = colorScheme.onPrimaryContainer,
                         modifier = Modifier.padding(12.dp),
                     )
                 }
@@ -134,13 +145,14 @@ fun OnboardingScreen(
             if (visibleError != null) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.errorContainer,
+                    color = colorScheme.errorContainer,
+                    border = BorderStroke(1.dp, colorScheme.error.copy(alpha = if (extColors.isDark) 0.45f else 0.3f)),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
                         text = visibleError,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        color = colorScheme.onErrorContainer,
                         modifier = Modifier.padding(12.dp),
                     )
                 }
@@ -158,20 +170,23 @@ fun OnboardingScreen(
                     Text(
                         text = "Cihazın root sağlayıcısı (KernelSU / Magisk / APatch) ve FLAG_MOUNT_MASTER desteği denetlenir.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = colorScheme.onSurfaceVariant,
                     )
                 } else {
                     Text(
                         text = "Sağlayıcı: ${env.provider.name} • Durum: ${if (env.isRootGranted) "Yetkili" else "Yetki Bekleniyor"}",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
-                        color = if (env.isRootGranted) AntigravityPalette.SuccessGreen else AntigravityPalette.WarningAmber,
+                        color = if (env.isRootGranted) extColors.success else extColors.warning,
                     )
                     if (!env.isRootGranted || env.provider == RootProviderType.KERNEL_SU) {
                         Surface(
                             shape = RoundedCornerShape(10.dp),
-                            color = Color(0xFF282012),
-                            border = BorderStroke(1.dp, AntigravityPalette.WarningAmber.copy(alpha = 0.6f)),
+                            color = extColors.warning.copy(alpha = if (extColors.isDark) 0.14f else 0.10f),
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = extColors.warning.copy(alpha = if (extColors.isDark) 0.45f else 0.35f),
+                            ),
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Row(
@@ -182,7 +197,7 @@ fun OnboardingScreen(
                                 Icon(
                                     Icons.Default.Warning,
                                     contentDescription = null,
-                                    tint = AntigravityPalette.WarningAmber,
+                                    tint = extColors.warning,
                                     modifier = Modifier.size(18.dp),
                                 )
                                 Text(
@@ -190,7 +205,7 @@ fun OnboardingScreen(
                                         "KernelSU kullanıyorsanız KernelSU Manager uygulamasını açın → Süper Kullanıcı sekmesinden Antigravity Mobile için root yetkisini etkinleştirin."
                                     },
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    color = colorScheme.onSurface,
                                 )
                             }
                         }
@@ -215,7 +230,7 @@ fun OnboardingScreen(
                 Text(
                     text = "Runtime izinleri, ACCESS_RESTRICTED_SETTINGS (Android 13-17), SYSTEM_ALERT_WINDOW, AccessibilityService ve Doze muafiyetini otomatik tanımlar.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = colorScheme.onSurfaceVariant,
                 )
                 onboarding.bootstrapReport?.let { report ->
                     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -270,7 +285,7 @@ fun OnboardingScreen(
                         Text(
                             text = "Çevrimdışı APK içi assets/rootfs/arm64-rootfs.tar.gz arşivini `/data/local/ag_rootfs` dizinine çıkarır.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = colorScheme.onSurfaceVariant,
                         )
                     }
 
@@ -300,7 +315,7 @@ fun OnboardingScreen(
                         Text(
                             text = cs.stage,
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
+                            color = colorScheme.primary,
                         )
                         val pct = cs.progressPercent
                         if (pct != null) {
@@ -317,7 +332,7 @@ fun OnboardingScreen(
                         Text(
                             text = "Chroot bağlı (${cs.rootfsPath}) • Çekirdek mount: ${if (cs.mountStatus.allCoreMounted) "Tamam" else "Kısmi"}",
                             style = MaterialTheme.typography.labelMedium,
-                            color = AntigravityPalette.SuccessGreen,
+                            color = extColors.success,
                         )
                     }
 
@@ -325,7 +340,7 @@ fun OnboardingScreen(
                         Text(
                             text = "Chroot hatası: ${cs.message}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = AntigravityPalette.CriticalRed,
+                            color = extColors.critical,
                         )
                     }
 
@@ -336,7 +351,7 @@ fun OnboardingScreen(
                     Text(
                         text = "agy sürümü doğrulandı: ${onboarding.agyVersion}",
                         style = MaterialTheme.typography.labelMedium,
-                        color = AntigravityPalette.SuccessGreen,
+                        color = extColors.success,
                     )
                 }
 
@@ -387,6 +402,7 @@ fun OnboardingScreen(
                         text = "Aktif Profil: ${active.displayName} (${if (active.isAuthenticated) "Doğrulandı" else "Giriş Bekleniyor"})",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
+                        color = colorScheme.onSurface,
                     )
                     Button(
                         onClick = { onAction(WorkspaceAction.StartOAuthLogin(active.id, null)) },
@@ -397,6 +413,7 @@ fun OnboardingScreen(
                             CircularProgressIndicator(
                                 modifier = Modifier.size(16.dp),
                                 strokeWidth = 2.dp,
+                                color = colorScheme.onPrimary,
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                         }
@@ -416,7 +433,7 @@ fun OnboardingScreen(
                                 Text(
                                     text = "Google OAuth URL hazırlanıyor...",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary,
+                                    color = colorScheme.primary,
                                 )
                             }
                         }
@@ -424,8 +441,8 @@ fun OnboardingScreen(
                         is AuthFlowState.AwaitingBrowserAuth -> {
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+                                color = colorScheme.primaryContainer.copy(alpha = if (extColors.isDark) 0.45f else 0.75f),
+                                border = BorderStroke(1.dp, colorScheme.primary.copy(alpha = if (extColors.isDark) 0.5f else 0.35f)),
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Column(
@@ -437,7 +454,7 @@ fun OnboardingScreen(
                                             "Chrome Custom Tabs üzerinden Google hesabınızla giriş yapın; yönlendirilen sayfadaki kodu veya tam URL'yi aşağıya yapıştırıp Onayla'ya basın."
                                         },
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurface,
+                                        color = colorScheme.onPrimaryContainer,
                                     )
                                     OutlinedButton(
                                         onClick = {
@@ -469,7 +486,7 @@ fun OnboardingScreen(
                                 Text(
                                     text = "Doğrulama kodu onaylanıyor...",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary,
+                                    color = colorScheme.primary,
                                 )
                             }
                         }
@@ -478,7 +495,7 @@ fun OnboardingScreen(
                             Text(
                                 text = "Doğrulandı: ${authState.email ?: active.displayName}",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = AntigravityPalette.SuccessGreen,
+                                color = extColors.success,
                                 fontWeight = FontWeight.SemiBold,
                             )
                         }
@@ -487,7 +504,7 @@ fun OnboardingScreen(
                             Text(
                                 text = authState.reason,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = AntigravityPalette.CriticalRed,
+                                color = extColors.critical,
                             )
                         }
 
@@ -551,7 +568,11 @@ fun OnboardingScreen(
                 shape = RoundedCornerShape(14.dp),
             ) {
                 if (onboarding.isBusy) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = colorScheme.onPrimary,
+                    )
                     Spacer(modifier = Modifier.width(8.dp))
                 }
                 Text(
@@ -572,12 +593,20 @@ private fun WizardStepCard(
     isDone: Boolean,
     content: @Composable () -> Unit,
 ) {
+    val extColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+    val cardColor = if (extColors.isDark) extColors.cardBackground else colorScheme.surface
+
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
+        color = cardColor,
         border = BorderStroke(
             width = 1.dp,
-            color = if (isDone) AntigravityPalette.SuccessGreen.copy(alpha = 0.65f) else MaterialTheme.colorScheme.outline,
+            color = if (isDone) {
+                extColors.success.copy(alpha = if (extColors.isDark) 0.65f else 0.55f)
+            } else {
+                extColors.cardBorder
+            },
         ),
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -597,20 +626,21 @@ private fun WizardStepCard(
                     Icon(
                         imageVector = icon,
                         contentDescription = null,
-                        tint = if (isDone) AntigravityPalette.SuccessGreen else MaterialTheme.colorScheme.primary,
+                        tint = if (isDone) extColors.success else colorScheme.primary,
                         modifier = Modifier.size(20.dp),
                     )
                     Text(
                         text = "$stepNumber. $title",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
+                        color = colorScheme.onSurface,
                     )
                 }
                 if (isDone) {
                     Icon(
                         imageVector = Icons.Default.CheckCircle,
                         contentDescription = "Tamamlandı",
-                        tint = AntigravityPalette.SuccessGreen,
+                        tint = extColors.success,
                         modifier = Modifier.size(20.dp),
                     )
                 }
@@ -622,9 +652,10 @@ private fun WizardStepCard(
 
 @Composable
 private fun ChecklistLine(label: String, passed: Boolean) {
+    val extColors = LocalAntigravityColors.current
     Text(
         text = "${if (passed) "✓" else "○"} $label",
         style = MaterialTheme.typography.labelMedium,
-        color = if (passed) AntigravityPalette.SuccessGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+        color = if (passed) extColors.success else MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
