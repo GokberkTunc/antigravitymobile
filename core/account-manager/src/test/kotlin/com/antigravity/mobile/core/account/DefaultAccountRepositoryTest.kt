@@ -374,4 +374,84 @@ class DefaultAccountRepositoryTest {
         assertNull(repo.suggestFallbackProfile(a1.id))
         advanceUntilIdle()
     }
+
+    @Test
+    fun `ChrootAgyAuthBridge fetchUsageOutput mounts chroot when unmounted and preserves all 4 TSV lines without app-data-dir`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val chrootManager = mockk<ChrootManager>()
+        val rootExecutor = mockk<RootExecutor>()
+        val specSlot = slot<ChrootCommandSpec>()
+
+        val fourLineTsv = listOf(
+            "Gemini Models\tWeekly Limit Remaining\t52%\t2026-12-01T08:19:42Z",
+            "Gemini Models\tFive Hour Limit Remaining\t91%\t2026-11-25T17:30:55Z",
+            "Claude and GPT models\tWeekly Limit Remaining\t50%\t2026-12-01T11:11:27Z",
+            "Claude and GPT models\tFive Hour Limit Remaining\t100%\t1970-01-01T00:00:00Z",
+        ).joinToString("\n")
+
+        every { chrootManager.state } returns MutableStateFlow<ChrootState>(ChrootState.Unmounted())
+        coEvery { chrootManager.mountAll() } returns Result.success(MountStatus(procMounted = true))
+        coEvery { chrootManager.buildChrootCommand(capture(specSlot)) } returns
+            listOf("su", "--mount-master", "-c", "chroot /data/local/ag_rootfs ... agy --print /usage")
+        coEvery { rootExecutor.execArgv(any(), any(), any()) } returns ShellResult(
+            exitCode = 0,
+            stdout = "$fourLineTsv\n",
+            stderr = "debug warning on stderr",
+        )
+
+        val bridge = ChrootAgyAuthBridge(
+            chrootManager = chrootManager,
+            rootExecutor = rootExecutor,
+            ioDispatcher = dispatcher,
+        )
+        val profile = AccountProfile(
+            id = "p-usage",
+            displayName = "Usage Profile",
+            paths = com.antigravity.mobile.contracts.ProfilePaths.forProfileId("p-usage"),
+        )
+
+        val res = bridge.fetchUsageOutput(profile)
+        assertTrue(res.isSuccess)
+        val output = res.getOrThrow()
+        assertEquals(fourLineTsv, output)
+        assertEquals(4, output.lines().size)
+
+        coVerify(exactly = 1) { chrootManager.mountAll() }
+        assertEquals(listOf("--print", "/usage"), specSlot.captured.args)
+        assertFalse(specSlot.captured.args.any { it.contains("app-data-dir") })
+        assertEquals(profile.paths.toChrootEnvironment(), specSlot.captured.environment)
+    }
+
+    @Test
+    fun `ChrootAgyAuthBridge fetchUsageOutput fails cleanly on non-zero exit without quota buckets`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val chrootManager = mockk<ChrootManager>()
+        val rootExecutor = mockk<RootExecutor>()
+
+        every { chrootManager.state } returns MutableStateFlow(
+            ChrootState.Mounted(mountStatus = MountStatus(procMounted = true)),
+        )
+        coEvery { chrootManager.buildChrootCommand(any()) } returns
+            listOf("su", "--mount-master", "-c", "chroot /data/local/ag_rootfs ... agy --print /usage")
+        coEvery { rootExecutor.execArgv(any(), any(), any()) } returns ShellResult(
+            exitCode = 1,
+            stdout = "",
+            stderr = "Not authenticated",
+        )
+
+        val bridge = ChrootAgyAuthBridge(
+            chrootManager = chrootManager,
+            rootExecutor = rootExecutor,
+            ioDispatcher = dispatcher,
+        )
+        val profile = AccountProfile(
+            id = "p-err",
+            displayName = "Unauth Profile",
+            paths = com.antigravity.mobile.contracts.ProfilePaths.forProfileId("p-err"),
+        )
+
+        val res = bridge.fetchUsageOutput(profile)
+        assertTrue(res.isFailure)
+        assertTrue(res.exceptionOrNull()!!.message!!.contains("Not authenticated"))
+    }
 }
