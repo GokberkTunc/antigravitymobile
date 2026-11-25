@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Launch
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
@@ -41,6 +42,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOff
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Memory
@@ -57,7 +59,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -96,52 +97,156 @@ import com.antigravity.mobile.contracts.PermissionMode
 import com.antigravity.mobile.contracts.RootProviderType
 import com.antigravity.mobile.contracts.ThinkingEffort
 import com.antigravity.mobile.contracts.WorkspaceProject
+import com.antigravity.mobile.feature.workspace.model.AppDestination
 import com.antigravity.mobile.feature.workspace.model.AppThemeMode
 import com.antigravity.mobile.feature.workspace.model.CustomizationCategory
 import com.antigravity.mobile.feature.workspace.model.InterfaceLayoutMode
 import com.antigravity.mobile.feature.workspace.model.SettingsCategory
 import com.antigravity.mobile.feature.workspace.model.WorkspaceAction
 import com.antigravity.mobile.feature.workspace.model.WorkspaceUiState
-import com.antigravity.mobile.feature.workspace.theme.AntigravityPalette
+import com.antigravity.mobile.feature.workspace.theme.LocalAntigravityColors
 import kotlin.math.roundToInt
 
 /**
- * Full Antigravity Desktop-parity + Mobile-exclusive Settings screen with 6 categories
- * and proper hardware Back handling (`CloseSettings`).
+ * Pure Kotlin title and dynamic 1-line summary helpers for the Google Settings master-detail UI.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+object SettingsSummaryFormatter {
+    fun categoryTitle(category: SettingsCategory): String = when (category) {
+        SettingsCategory.GENERAL -> "Genel"
+        SettingsCategory.ACCOUNTS_QUOTA -> "Hesaplar & Kota"
+        SettingsCategory.MODELS_AGENT -> "Modeller & Ajan"
+        SettingsCategory.PROJECTS_PERMISSIONS -> "Projeler & İzinler"
+        SettingsCategory.CUSTOMIZATIONS -> "Özelleştirmeler & MCP"
+        SettingsCategory.MOBILE_ROOT -> "Mobil & Root Sistemi"
+    }
+
+    fun categorySummary(category: SettingsCategory, state: WorkspaceUiState): String = when (category) {
+        SettingsCategory.GENERAL -> {
+            val themeLabel = when (state.settings.themeMode) {
+                AppThemeMode.DARK -> "Karanlık"
+                AppThemeMode.LIGHT -> "Aydınlık"
+                AppThemeMode.SYSTEM -> "Sistem"
+            }
+            val layoutLabel = when (state.settings.layoutMode) {
+                InterfaceLayoutMode.SOFTWARE_ENGINEERING -> "Yazılım Mühendisliği"
+                InterfaceLayoutMode.COMPACT_MOBILE -> "Kompakt Mobil"
+            }
+            "$themeLabel • $layoutLabel • ${state.voiceLocaleTag}"
+        }
+
+        SettingsCategory.ACCOUNTS_QUOTA -> {
+            val activeProfile = state.activeProfile
+            if (activeProfile == null) {
+                "Hesap yok • 5s — / Hf —"
+            } else {
+                val identity = activeProfile.email?.takeIf { it.isNotBlank() } ?: activeProfile.displayName
+                val quotaSummary = QuotaFormatter.formatCompactDualSummary(
+                    quota = activeProfile.quota,
+                    selectedModel = state.selectedModel,
+                )
+                "$identity • $quotaSummary"
+            }
+        }
+
+        SettingsCategory.MODELS_AGENT -> {
+            "${state.selectedModel.displayName} • ${state.selectedEffort.name} • ${state.permissionMode.name}"
+        }
+
+        SettingsCategory.PROJECTS_PERMISSIONS -> {
+            "${state.projects.size} proje • ${state.denylistPackages.size} korumalı uygulama"
+        }
+
+        SettingsCategory.CUSTOMIZATIONS -> {
+            val health = state.mcpHealth
+            val mcpStatus = if (health.isRunning) {
+                health.endpointPort?.let { "Aktif (:$it)" } ?: "Aktif"
+            } else {
+                "Kapalı"
+            }
+            val toolCount = if (state.mcpTools.isNotEmpty()) state.mcpTools.size else health.registeredToolCount
+            "MCP $mcpStatus • $toolCount araç"
+        }
+
+        SettingsCategory.MOBILE_ROOT -> {
+            val rootProvider = when (state.onboarding.rootEnvironment?.provider) {
+                RootProviderType.KERNEL_SU -> "KernelSU"
+                RootProviderType.MAGISK -> "Magisk"
+                RootProviderType.APATCH -> "APatch"
+                RootProviderType.GENERIC_SU -> "Generic SU"
+                RootProviderType.NONE -> "Root Yok"
+                null -> "Root Denetlenmedi"
+            }
+            val agyVersion = state.onboarding.agyVersion
+                ?: (state.onboarding.chrootState as? ChrootState.Mounted)?.agyVersion
+                ?: (state.onboarding.chrootState as? ChrootState.Unmounted)?.agyVersion
+            "$rootProvider • agy ${agyVersion ?: "—"} • Overlay & Kill-Switch"
+        }
+    }
+}
+
+/**
+ * Backward-compatible entry point delegating to [SettingsListScreen] or [SettingsDetailScreen]
+ * based on [WorkspaceUiState.currentDestination].
+ */
 @Composable
 fun SettingsScreen(
     state: WorkspaceUiState,
     onAction: (WorkspaceAction) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    BackHandler(enabled = true) {
-        onAction(WorkspaceAction.CloseSettings)
+    when (val destination = state.currentDestination) {
+        is AppDestination.SettingsDetail -> {
+            SettingsDetailScreen(
+                category = destination.category,
+                state = state,
+                onAction = onAction,
+                modifier = modifier,
+            )
+        }
+
+        else -> {
+            SettingsListScreen(
+                state = state,
+                onAction = onAction,
+                modifier = modifier,
+            )
+        }
     }
+}
+
+/**
+ * Google Settings-style master overview screen listing all 6 settings categories with tinted
+ * circular icon badges, live 1-line dynamic summaries, and full hardware Back navigation.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsListScreen(
+    state: WorkspaceUiState,
+    onAction: (WorkspaceAction) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    BackHandler(enabled = true) {
+        onAction(WorkspaceAction.NavigateBack)
+    }
+
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = colorScheme.background,
         topBar = {
             Column {
                 TopAppBar(
                     title = {
-                        Column {
-                            Text(
-                                text = "Ayarlar",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold,
-                            )
-                            Text(
-                                text = "Antigravity Mobile • Masaüstü Eşleniği & Root",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                        Text(
+                            text = "Ayarlar",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
                     },
                     navigationIcon = {
-                        IconButton(onClick = { onAction(WorkspaceAction.CloseSettings) }) {
+                        IconButton(onClick = { onAction(WorkspaceAction.NavigateBack) }) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "Geri",
@@ -149,56 +254,215 @@ fun SettingsScreen(
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        titleContentColor = MaterialTheme.colorScheme.onSurface,
-                        navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
+                        containerColor = colorScheme.surface,
+                        titleContentColor = colorScheme.onSurface,
+                        navigationIconContentColor = colorScheme.onSurface,
                     ),
                 )
+                HorizontalDivider(color = extendedColors.cardBorder)
+            }
+        },
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            SettingsCategoryGroup(
+                groupLabel = "Çalışma Alanı",
+                categories = listOf(
+                    SettingsCategory.GENERAL,
+                    SettingsCategory.ACCOUNTS_QUOTA,
+                    SettingsCategory.MODELS_AGENT,
+                ),
+                state = state,
+                onSelectCategory = { onAction(WorkspaceAction.OpenSettingsDetail(it)) },
+            )
 
-                // Horizontal scrollable category chips
-                Surface(
-                    color = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(SettingsCategory.entries) { category ->
-                            val selected = state.selectedSettingsCategory == category
-                            FilterChip(
-                                selected = selected,
-                                onClick = { onAction(WorkspaceAction.SelectSettingsCategory(category)) },
-                                label = {
-                                    Text(
-                                        text = category.displayLabel(),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = category.icon(),
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp),
-                                    )
-                                },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    selectedLeadingIconColor = MaterialTheme.colorScheme.primary,
-                                ),
-                                border = FilterChipDefaults.filterChipBorder(
-                                    enabled = true,
-                                    selected = selected,
-                                    borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
-                                    selectedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
-                                ),
+            SettingsCategoryGroup(
+                groupLabel = "Sistem & Güvenlik",
+                categories = listOf(
+                    SettingsCategory.PROJECTS_PERMISSIONS,
+                    SettingsCategory.CUSTOMIZATIONS,
+                    SettingsCategory.MOBILE_ROOT,
+                ),
+                state = state,
+                onSelectCategory = { onAction(WorkspaceAction.OpenSettingsDetail(it)) },
+            )
+
+            Text(
+                text = "Antigravity Mobile • Android Root Edition",
+                style = MaterialTheme.typography.labelSmall,
+                color = colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun SettingsCategoryGroup(
+    groupLabel: String,
+    categories: List<SettingsCategory>,
+    state: WorkspaceUiState,
+    onSelectCategory: (SettingsCategory) -> Unit,
+) {
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = groupLabel,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 6.dp),
+        )
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            color = settingsCardContainerColor(),
+            border = BorderStroke(1.dp, extendedColors.cardBorder),
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                categories.forEachIndexed { index, category ->
+                    if (index > 0) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 68.dp, end = 16.dp),
+                            color = extendedColors.cardBorder.copy(alpha = 0.8f),
+                        )
+                    }
+                    SettingsCategoryListRow(
+                        category = category,
+                        summary = SettingsSummaryFormatter.categorySummary(category, state),
+                        onClick = { onSelectCategory(category) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsCategoryListRow(
+    category: SettingsCategory,
+    summary: String,
+    onClick: () -> Unit,
+) {
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+    val badgeColor = categoryBadgeColor(category)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(badgeColor.copy(alpha = if (extendedColors.isDark) 0.18f else 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = category.icon(),
+                contentDescription = null,
+                tint = badgeColor,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = SettingsSummaryFormatter.categoryTitle(category),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Medium,
+                color = colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.bodySmall,
+                color = colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(22.dp),
+        )
+    }
+}
+
+/**
+ * Focused Google Settings detail screen for a single [SettingsCategory] with hardware Back
+ * returning smoothly to [SettingsListScreen].
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsDetailScreen(
+    category: SettingsCategory,
+    state: WorkspaceUiState,
+    onAction: (WorkspaceAction) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    BackHandler(enabled = true) {
+        onAction(WorkspaceAction.NavigateBack)
+    }
+
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        containerColor = colorScheme.background,
+        topBar = {
+            Column {
+                TopAppBar(
+                    title = {
+                        Text(
+                            text = SettingsSummaryFormatter.categoryTitle(category),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { onAction(WorkspaceAction.NavigateBack) }) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Geri",
                             )
                         }
-                    }
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = colorScheme.surface,
+                        titleContentColor = colorScheme.onSurface,
+                        navigationIconContentColor = colorScheme.onSurface,
+                    ),
+                )
+                HorizontalDivider(color = extendedColors.cardBorder)
             }
         },
     ) { innerPadding ->
@@ -210,7 +474,7 @@ fun SettingsScreen(
                 .padding(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            when (state.selectedSettingsCategory) {
+            when (category) {
                 SettingsCategory.GENERAL -> GeneralSettingsContent(state = state, onAction = onAction)
                 SettingsCategory.ACCOUNTS_QUOTA -> AccountsQuotaSettingsContent(state = state, onAction = onAction)
                 SettingsCategory.MODELS_AGENT -> ModelsAgentSettingsContent(state = state, onAction = onAction)
@@ -224,15 +488,6 @@ fun SettingsScreen(
     }
 }
 
-private fun SettingsCategory.displayLabel(): String = when (this) {
-    SettingsCategory.GENERAL -> "Genel"
-    SettingsCategory.ACCOUNTS_QUOTA -> "Hesaplar & Kota"
-    SettingsCategory.MODELS_AGENT -> "Modeller & Ajan"
-    SettingsCategory.PROJECTS_PERMISSIONS -> "Projeler & İzinler"
-    SettingsCategory.CUSTOMIZATIONS -> "Özelleştirmeler"
-    SettingsCategory.MOBILE_ROOT -> "Mobil & Root"
-}
-
 private fun SettingsCategory.icon(): ImageVector = when (this) {
     SettingsCategory.GENERAL -> Icons.Default.Tune
     SettingsCategory.ACCOUNTS_QUOTA -> Icons.Default.AccountCircle
@@ -240,6 +495,40 @@ private fun SettingsCategory.icon(): ImageVector = when (this) {
     SettingsCategory.PROJECTS_PERMISSIONS -> Icons.Default.Folder
     SettingsCategory.CUSTOMIZATIONS -> Icons.Default.Extension
     SettingsCategory.MOBILE_ROOT -> Icons.Default.AdminPanelSettings
+}
+
+@Composable
+private fun categoryBadgeColor(category: SettingsCategory): Color {
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+    return when (category) {
+        SettingsCategory.GENERAL -> colorScheme.primary
+        SettingsCategory.ACCOUNTS_QUOTA -> extendedColors.success
+        SettingsCategory.MODELS_AGENT -> colorScheme.secondary
+        SettingsCategory.PROJECTS_PERMISSIONS -> extendedColors.warning
+        SettingsCategory.CUSTOMIZATIONS -> extendedColors.accentCyan
+        SettingsCategory.MOBILE_ROOT -> extendedColors.critical
+    }
+}
+
+@Composable
+private fun settingsCardContainerColor(): Color {
+    val extendedColors = LocalAntigravityColors.current
+    return if (extendedColors.isDark) {
+        MaterialTheme.colorScheme.surfaceContainer
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+}
+
+@Composable
+private fun settingsInnerTileColor(): Color {
+    val extendedColors = LocalAntigravityColors.current
+    return if (extendedColors.isDark) {
+        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.72f)
+    }
 }
 
 // ============================================================================
@@ -253,10 +542,11 @@ private fun GeneralSettingsContent(
     onAction: (WorkspaceAction) -> Unit,
 ) {
     val settings = state.settings
+    val dividerColor = LocalAntigravityColors.current.cardBorder.copy(alpha = 0.75f)
 
     SettingsSectionCard(
         title = "Görünüm & Tema",
-        subtitle = "Antigravity Obsidian koyu tema önceliklidir; sistem veya aydınlık tema seçebilirsiniz.",
+        subtitle = "Karanlık, Aydınlık veya Sistem temasını seçin; her iki modda da tam uyumlu Google Antigravity görünümü.",
     ) {
         Text(
             text = "Tema Modu",
@@ -291,18 +581,18 @@ private fun GeneralSettingsContent(
             }
         }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        HorizontalDivider(color = dividerColor)
 
         SettingsSwitchRow(
             title = "Dinamik Renk (Material You)",
-            subtitle = "Android 12+ duvar kağıdı paletini uygula. Kapalıyken Antigravity Obsidian/Cyan paleti kullanılır.",
+            subtitle = "Android 12+ duvar kağıdı paletini uygula. Kapalıyken Antigravity resmi renk paleti kullanılır.",
             checked = settings.useDynamicColor,
             onCheckedChange = { enabled ->
                 onAction(WorkspaceAction.UpdateSettings { it.copy(useDynamicColor = enabled) })
             },
         )
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        HorizontalDivider(color = dividerColor)
 
         Text(
             text = "Arayüz Düzeni",
@@ -376,7 +666,7 @@ private fun GeneralSettingsContent(
                 onAction(WorkspaceAction.UpdateSettings { it.copy(autoScrollChat = enabled) })
             },
         )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        HorizontalDivider(color = dividerColor)
         SettingsSwitchRow(
             title = "Kod Satır Numaralarını Göster",
             subtitle = "Markdown kod bloklarında sol kenar satır numaralarını etkinleştir.",
@@ -385,7 +675,7 @@ private fun GeneralSettingsContent(
                 onAction(WorkspaceAction.UpdateSettings { it.copy(showCodeLineNumbers = enabled) })
             },
         )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        HorizontalDivider(color = dividerColor)
         SettingsSwitchRow(
             title = "Düşünce Bloklarını Varsayılan Açık Tut",
             subtitle = "Modelin iç muhakeme (Thought) akordeonlarını otomatik genişletilmiş göster.",
@@ -394,7 +684,7 @@ private fun GeneralSettingsContent(
                 onAction(WorkspaceAction.UpdateSettings { it.copy(showThoughtBlocksExpanded = enabled) })
             },
         )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        HorizontalDivider(color = dividerColor)
         SettingsSwitchRow(
             title = "Görev Tamamlanma Bildirimleri",
             subtitle = "Uzun süren ajan/swarm görevleri tamamlandığında sistem bildirimi gönder.",
@@ -416,6 +706,8 @@ private fun AccountsQuotaSettingsContent(
     state: WorkspaceUiState,
     onAction: (WorkspaceAction) -> Unit,
 ) {
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
     var showAddAccountDialog by remember { mutableStateOf(false) }
     var showImportDesktopDialog by remember { mutableStateOf(false) }
     var profilePendingDeletion by remember { mutableStateOf<AccountProfile?>(null) }
@@ -437,7 +729,7 @@ private fun AccountsQuotaSettingsContent(
                     CircularProgressIndicator(
                         modifier = Modifier.size(16.dp),
                         strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = colorScheme.onPrimary,
                     )
                 } else {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -459,11 +751,11 @@ private fun AccountsQuotaSettingsContent(
             }
         }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        HorizontalDivider(color = extendedColors.cardBorder.copy(alpha = 0.75f))
 
         SettingsSwitchRow(
             title = "Açılışta Kotaları Otomatik Yenile",
-            subtitle = "Uygulama açıldığında aktif ve kayıtlı Google hesaplarının kalan kotasını çek.",
+            subtitle = "Uygulama açıldığında aktif ve kayıtlı Google hesaplarının 4 kademeli kotasını çek.",
             checked = state.settings.autoRefreshQuotaOnLaunch,
             onCheckedChange = { enabled ->
                 onAction(WorkspaceAction.UpdateSettings { it.copy(autoRefreshQuotaOnLaunch = enabled) })
@@ -502,7 +794,7 @@ private fun AccountsQuotaSettingsContent(
     if (state.profiles.isEmpty()) {
         SettingsSectionCard(
             title = "Kayıtlı Hesap Yok",
-            subtitle = "Henüz bir Google hesabı profili eklenmedi. Başlamak için '+ Yeni Google Hesabı' butonuna dokunun.",
+            subtitle = "Henüz bir Google hesabı profili eklenmedi. Başlamak için 'Yeni Google Hesabı' butonuna dokunun.",
         ) {}
     } else {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -519,6 +811,7 @@ private fun AccountsQuotaSettingsContent(
                         } else {
                             null
                         },
+                        selectedModel = state.selectedModel,
                     )
 
                     Row(
@@ -540,7 +833,7 @@ private fun AccountsQuotaSettingsContent(
                             Text(
                                 text = profile.paths.chrootHome,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f),
@@ -550,7 +843,7 @@ private fun AccountsQuotaSettingsContent(
                         TextButton(
                             onClick = { profilePendingDeletion = profile },
                             colors = ButtonDefaults.textButtonColors(
-                                contentColor = AntigravityPalette.CriticalRed,
+                                contentColor = extendedColors.critical,
                             ),
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -601,8 +894,8 @@ private fun AccountsQuotaSettingsContent(
                         profilePendingDeletion = null
                     },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = AntigravityPalette.CriticalRed,
-                        contentColor = Color.White,
+                        containerColor = colorScheme.error,
+                        contentColor = colorScheme.onError,
                     ),
                 ) {
                     Text("Profil Sil")
@@ -687,6 +980,10 @@ private fun ModelsAgentSettingsContent(
     state: WorkspaceUiState,
     onAction: (WorkspaceAction) -> Unit,
 ) {
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+    val tileBackground = settingsInnerTileColor()
+
     SettingsSectionCard(
         title = "Varsayılan Model",
         subtitle = "Yeni ACP oturumlarında kullanılacak Antigravity ajan modelini seçin.",
@@ -701,22 +998,22 @@ private fun ModelsAgentSettingsContent(
                     AcpModel.ORCHESTRATOR -> "Çoklu alt ajan & /swarm koordinasyonu için optimize"
                 }
                 val accent = when (model) {
-                    AcpModel.GEMINI_4_NEON -> AntigravityPalette.NeonCyan
-                    AcpModel.GEMINI_4_HYDROGEN -> AntigravityPalette.HydrogenViolet
-                    AcpModel.GEMINI_4_CARBON -> AntigravityPalette.CarbonTeal
-                    AcpModel.ORCHESTRATOR -> AntigravityPalette.SuccessGreen
+                    AcpModel.GEMINI_4_NEON -> colorScheme.primary
+                    AcpModel.GEMINI_4_HYDROGEN -> colorScheme.secondary
+                    AcpModel.GEMINI_4_CARBON -> extendedColors.accentCyan
+                    AcpModel.ORCHESTRATOR -> extendedColors.success
                 }
 
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = if (selected) {
-                        accent.copy(alpha = 0.14f)
+                        accent.copy(alpha = if (extendedColors.isDark) 0.16f else 0.10f)
                     } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        tileBackground
                     },
                     border = BorderStroke(
                         width = if (selected) 1.25.dp else 1.dp,
-                        color = if (selected) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+                        color = if (selected) accent else extendedColors.cardBorder,
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -745,15 +1042,17 @@ private fun ModelsAgentSettingsContent(
                                     text = model.displayName,
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold,
+                                    color = colorScheme.onSurface,
                                 )
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
-                                    color = MaterialTheme.colorScheme.surface,
+                                    color = colorScheme.surface,
+                                    border = BorderStroke(0.5.dp, extendedColors.cardBorder),
                                 ) {
                                     Text(
                                         text = model.cliId,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = colorScheme.onSurfaceVariant,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                     )
                                 }
@@ -761,7 +1060,7 @@ private fun ModelsAgentSettingsContent(
                             Text(
                                 text = description,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = colorScheme.onSurfaceVariant,
                             )
                         }
                         if (selected) {
@@ -822,29 +1121,31 @@ private fun ModelsAgentSettingsContent(
                     PermissionMode.AUTO -> Triple(
                         "Otonom (AUTO)",
                         "Düşük/orta riskli işlemleri otomatik uygular; CRITICAL güvenlik kapısı her zaman aktiftir.",
-                        AntigravityPalette.WarningAmber,
+                        extendedColors.warning,
                     )
+
                     PermissionMode.ASK -> Triple(
                         "Onay Sor (ASK)",
                         "Dosya yazma, sistem araçları ve root komutlarından önce kullanıcı onayı ister.",
-                        AntigravityPalette.NeonCyan,
+                        colorScheme.primary,
                     )
+
                     PermissionMode.PLAN -> Triple(
                         "Plan Modu (PLAN)",
                         "Salt okunur analiz ve adım adım plan oluşturma; sistemde değişiklik yapmaz.",
-                        AntigravityPalette.HydrogenViolet,
+                        colorScheme.secondary,
                     )
                 }
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = if (selected) {
-                        color.copy(alpha = 0.14f)
+                        color.copy(alpha = if (extendedColors.isDark) 0.16f else 0.10f)
                     } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        tileBackground
                     },
                     border = BorderStroke(
-                        1.dp,
-                        if (selected) color else MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+                        width = if (selected) 1.25.dp else 1.dp,
+                        color = if (selected) color else extendedColors.cardBorder,
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -859,11 +1160,16 @@ private fun ModelsAgentSettingsContent(
                             modifier = Modifier.weight(1f),
                             verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
-                            Text(label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                             Text(
-                                desc,
+                                text = label,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colorScheme.onSurface,
+                            )
+                            Text(
+                                text = desc,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = colorScheme.onSurfaceVariant,
                             )
                         }
                         if (selected) {
@@ -887,7 +1193,7 @@ private fun ModelsAgentSettingsContent(
                 onAction(WorkspaceAction.UpdateSettings { it.copy(acpProcessPerSession = enabled) })
             },
         )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        HorizontalDivider(color = extendedColors.cardBorder.copy(alpha = 0.75f))
         SettingsSwitchRow(
             title = "ACP --sandbox",
             subtitle = "Ajan komutlarını ek dosya sistemi kısıtlamalarıyla korumalı alanda çalıştır.",
@@ -909,6 +1215,10 @@ private fun ProjectsPermissionsSettingsContent(
     state: WorkspaceUiState,
     onAction: (WorkspaceAction) -> Unit,
 ) {
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+    val tileBackground = settingsInnerTileColor()
+
     var showAddProjectDialog by remember { mutableStateOf(false) }
     var projectToRename by remember { mutableStateOf<WorkspaceProject?>(null) }
     var projectToDelete by remember { mutableStateOf<WorkspaceProject?>(null) }
@@ -928,105 +1238,147 @@ private fun ProjectsPermissionsSettingsContent(
             }
         },
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            state.projects.forEach { project ->
-                val isSelected = project.id == state.activeProject.id
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = if (isSelected) {
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-                    },
-                    border = BorderStroke(
-                        1.dp,
-                        if (isSelected) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
-                        } else {
-                            MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
-                        },
-                    ),
+        if (state.projects.isEmpty()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = tileBackground,
+                border = BorderStroke(1.dp, extendedColors.cardBorder),
+            ) {
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onAction(WorkspaceAction.SelectProject(project.id)) },
+                        .padding(horizontal = 16.dp, vertical = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    Icon(
+                        imageVector = Icons.Default.FolderOff,
+                        contentDescription = null,
+                        tint = colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(28.dp),
+                    )
+                    Text(
+                        text = "Henüz proje yok",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "İsterseniz Cihaz Geneli olarak devam edebilir veya yeni bir çalışma dizini ekleyebilirsiniz.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colorScheme.onSurfaceVariant,
+                    )
+                    FilledTonalButton(onClick = { showAddProjectDialog = true }) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("İlk Projeyi Ekle")
+                    }
+                }
+            }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                state.projects.forEach { project ->
+                    val isSelected = project.id == state.selectedProjectId
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (isSelected) {
+                            colorScheme.primaryContainer.copy(alpha = if (extendedColors.isDark) 0.45f else 0.55f)
+                        } else {
+                            tileBackground
+                        },
+                        border = BorderStroke(
+                            width = if (isSelected) 1.25.dp else 1.dp,
+                            color = if (isSelected) {
+                                colorScheme.primary.copy(alpha = 0.7f)
+                            } else {
+                                extendedColors.cardBorder
+                            },
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onAction(WorkspaceAction.SelectProject(project.id)) },
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Text(
+                                            text = project.name,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (isSelected) {
+                                            Surface(
+                                                shape = RoundedCornerShape(999.dp),
+                                                color = colorScheme.primary.copy(alpha = 0.16f),
+                                            ) {
+                                                Text(
+                                                    text = "Aktif",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = colorScheme.primary,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                                                )
+                                            }
+                                        }
+                                    }
                                     Text(
-                                        text = project.name,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.SemiBold,
+                                        text = project.rootPath,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = colorScheme.onSurfaceVariant,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
-                                    if (isSelected) {
-                                        Surface(
-                                            shape = RoundedCornerShape(999.dp),
-                                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
-                                        ) {
-                                            Text(
-                                                text = "Aktif",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
-                                            )
-                                        }
-                                    }
                                 }
-                                Text(
-                                    text = project.rootPath,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = colorScheme.surface,
+                                    border = BorderStroke(0.5.dp, extendedColors.cardBorder),
+                                ) {
+                                    Text(
+                                        text = project.defaultPermissionMode.name,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                    )
+                                }
                             }
 
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.surface,
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text(
-                                    text = project.defaultPermissionMode.name,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                                )
-                            }
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            TextButton(onClick = { projectToRename = project }) {
-                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Yeniden Adlandır")
-                            }
-                            TextButton(
-                                onClick = { projectToDelete = project },
-                                colors = ButtonDefaults.textButtonColors(
-                                    contentColor = AntigravityPalette.CriticalRed,
-                                ),
-                            ) {
-                                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(15.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Proje Sil")
+                                TextButton(onClick = { projectToRename = project }) {
+                                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Yeniden Adlandır")
+                                }
+                                TextButton(
+                                    onClick = { projectToDelete = project },
+                                    colors = ButtonDefaults.textButtonColors(
+                                        contentColor = extendedColors.critical,
+                                    ),
+                                ) {
+                                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Proje Sil")
+                                }
                             }
                         }
                     }
@@ -1066,7 +1418,6 @@ private fun ProjectsPermissionsSettingsContent(
             }
         }
 
-        // Quick suggestions for common protected packages not yet added
         val quickSuggestions = listOf(
             "tr.gov.turkiye.edevlet.kapisi" to "e-Devlet",
             "com.google.android.apps.authenticator2" to "Authenticator",
@@ -1078,7 +1429,7 @@ private fun ProjectsPermissionsSettingsContent(
             Text(
                 text = "Hızlı Ekle",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = colorScheme.onSurfaceVariant,
             )
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1097,15 +1448,15 @@ private fun ProjectsPermissionsSettingsContent(
             Text(
                 text = "Henüz korunan paket eklenmedi.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = colorScheme.onSurfaceVariant,
             )
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 state.denylistPackages.sorted().forEach { pkg ->
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                        border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                        color = tileBackground,
+                        border = BorderStroke(0.75.dp, extendedColors.cardBorder),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Row(
@@ -1121,13 +1472,14 @@ private fun ProjectsPermissionsSettingsContent(
                                 Icon(
                                     imageVector = Icons.Default.Security,
                                     contentDescription = null,
-                                    tint = AntigravityPalette.WarningAmber,
+                                    tint = extendedColors.warning,
                                     modifier = Modifier.size(16.dp),
                                 )
                                 Text(
                                     text = pkg,
                                     style = MaterialTheme.typography.labelMedium,
                                     fontFamily = FontFamily.Monospace,
+                                    color = colorScheme.onSurface,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
@@ -1140,7 +1492,7 @@ private fun ProjectsPermissionsSettingsContent(
                                     imageVector = Icons.Default.Close,
                                     contentDescription = "Kaldır",
                                     modifier = Modifier.size(16.dp),
-                                    tint = AntigravityPalette.CriticalRed,
+                                    tint = extendedColors.critical,
                                 )
                             }
                         }
@@ -1187,8 +1539,8 @@ private fun ProjectsPermissionsSettingsContent(
                         projectToDelete = null
                     },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = AntigravityPalette.CriticalRed,
-                        contentColor = Color.White,
+                        containerColor = colorScheme.error,
+                        contentColor = colorScheme.onError,
                     ),
                 ) {
                     Text("Proje Sil")
@@ -1298,7 +1650,7 @@ private fun RenameProjectDialog(
 }
 
 // ============================================================================
-// 5. CUSTOMIZATIONS SETTINGS (MCP + Skills / Rules / Hooks)
+// 5. CUSTOMIZATIONS & MCP SETTINGS (MCP + Skills / Rules / Hooks)
 // ============================================================================
 
 @Composable
@@ -1306,6 +1658,10 @@ private fun CustomizationsSettingsContent(
     state: WorkspaceUiState,
     onAction: (WorkspaceAction) -> Unit,
 ) {
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+    val tileBackground = settingsInnerTileColor()
+
     var expandTools by remember { mutableStateOf(false) }
     val health = state.mcpHealth
     val toolCount = if (state.mcpTools.isNotEmpty()) state.mcpTools.size else health.registeredToolCount
@@ -1333,14 +1689,14 @@ private fun CustomizationsSettingsContent(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 val statusColor = if (health.isRunning) {
-                    AntigravityPalette.SuccessGreen
+                    extendedColors.success
                 } else {
-                    AntigravityPalette.CriticalRed
+                    extendedColors.critical
                 }
                 Surface(
                     shape = RoundedCornerShape(999.dp),
-                    color = statusColor.copy(alpha = 0.16f),
-                    border = BorderStroke(0.75.dp, statusColor.copy(alpha = 0.5f)),
+                    color = statusColor.copy(alpha = if (extendedColors.isDark) 0.16f else 0.10f),
+                    border = BorderStroke(0.75.dp, statusColor.copy(alpha = 0.45f)),
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
@@ -1366,18 +1722,18 @@ private fun CustomizationsSettingsContent(
                     text = endpointLabel,
                     style = MaterialTheme.typography.labelMedium,
                     fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = colorScheme.onSurface,
                 )
             }
 
             Surface(
                 shape = RoundedCornerShape(999.dp),
-                color = MaterialTheme.colorScheme.primaryContainer,
+                color = colorScheme.primaryContainer,
             ) {
                 Text(
                     text = "$toolCount araç",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    color = colorScheme.onPrimaryContainer,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                 )
             }
@@ -1391,10 +1747,10 @@ private fun CustomizationsSettingsContent(
             Text(
                 text = "İşlenen toplam çağrı: ${health.totalCallsHandled}",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = colorScheme.onSurfaceVariant,
             )
             TextButton(onClick = { expandTools = !expandTools }) {
-                Text(if (expandTools) "Araçları Gizle" else "15 MCP Aracını Göster")
+                Text(if (expandTools) "Araçları Gizle" else "$toolCount MCP Aracını Göster")
                 Icon(
                     imageVector = if (expandTools) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                     contentDescription = null,
@@ -1407,19 +1763,20 @@ private fun CustomizationsSettingsContent(
             Text(
                 text = "Son hata: ${health.lastError}",
                 style = MaterialTheme.typography.bodySmall,
-                color = AntigravityPalette.CriticalRed,
+                color = extendedColors.critical,
             )
         }
 
         if (expandTools) {
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            HorizontalDivider(color = extendedColors.cardBorder.copy(alpha = 0.75f))
             if (state.mcpTools.isNotEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     state.mcpTools.forEach { tool ->
                         val riskColor = mcpRiskColor(tool.riskLevel)
                         Surface(
                             shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                            color = tileBackground,
+                            border = BorderStroke(0.75.dp, extendedColors.cardBorder),
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Column(
@@ -1436,10 +1793,11 @@ private fun CustomizationsSettingsContent(
                                         style = MaterialTheme.typography.labelMedium,
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = FontWeight.SemiBold,
+                                        color = colorScheme.onSurface,
                                     )
                                     Surface(
                                         shape = RoundedCornerShape(999.dp),
-                                        color = riskColor.copy(alpha = 0.16f),
+                                        color = riskColor.copy(alpha = if (extendedColors.isDark) 0.16f else 0.10f),
                                         border = BorderStroke(0.75.dp, riskColor.copy(alpha = 0.45f)),
                                     ) {
                                         Text(
@@ -1454,7 +1812,7 @@ private fun CustomizationsSettingsContent(
                                     Text(
                                         text = tool.description,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = colorScheme.onSurfaceVariant,
                                     )
                                 }
                             }
@@ -1468,6 +1826,7 @@ private fun CustomizationsSettingsContent(
                             text = "• $toolName",
                             style = MaterialTheme.typography.labelMedium,
                             fontFamily = FontFamily.Monospace,
+                            color = colorScheme.onSurface,
                         )
                     }
                 }
@@ -1475,7 +1834,7 @@ private fun CustomizationsSettingsContent(
                 Text(
                     text = "Kayıtlı MCP aracı bulunamadı. Sunucu başlatıldığında araçlar burada listelenir.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -1496,7 +1855,7 @@ private fun CustomizationsSettingsContent(
             ) {
                 itemsForCategory.forEachIndexed { index, item ->
                     if (index > 0) {
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                        HorizontalDivider(color = extendedColors.cardBorder.copy(alpha = 0.75f))
                     }
                     SettingsSwitchRow(
                         title = item.name,
@@ -1512,11 +1871,15 @@ private fun CustomizationsSettingsContent(
     }
 }
 
-private fun mcpRiskColor(risk: McpToolRisk): Color = when (risk) {
-    McpToolRisk.LOW -> AntigravityPalette.SuccessGreen
-    McpToolRisk.MEDIUM -> AntigravityPalette.NeonCyan
-    McpToolRisk.HIGH -> AntigravityPalette.WarningAmber
-    McpToolRisk.CRITICAL -> AntigravityPalette.CriticalRed
+@Composable
+private fun mcpRiskColor(risk: McpToolRisk): Color {
+    val extendedColors = LocalAntigravityColors.current
+    return when (risk) {
+        McpToolRisk.LOW -> extendedColors.success
+        McpToolRisk.MEDIUM -> extendedColors.accentCyan
+        McpToolRisk.HIGH -> extendedColors.warning
+        McpToolRisk.CRITICAL -> extendedColors.critical
+    }
 }
 
 // ============================================================================
@@ -1529,6 +1892,8 @@ private fun MobileRootSettingsContent(
     state: WorkspaceUiState,
     onAction: (WorkspaceAction) -> Unit,
 ) {
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
     val onboarding = state.onboarding
     val rootEnv = onboarding.rootEnvironment
 
@@ -1558,9 +1923,9 @@ private fun MobileRootSettingsContent(
         }
         val granted = rootEnv?.isRootGranted == true
         val statusColor = when {
-            rootEnv == null -> AntigravityPalette.TextSecondary
-            granted -> AntigravityPalette.SuccessGreen
-            else -> AntigravityPalette.CriticalRed
+            rootEnv == null -> colorScheme.onSurfaceVariant
+            granted -> extendedColors.success
+            else -> extendedColors.critical
         }
 
         Row(
@@ -1573,21 +1938,22 @@ private fun MobileRootSettingsContent(
                     text = providerLabel,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
+                    color = colorScheme.onSurface,
                 )
                 if (!rootEnv?.suVersion.isNullOrBlank()) {
                     Text(
                         text = "Sürüm: ${rootEnv?.suVersion}",
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = colorScheme.onSurfaceVariant,
                     )
                 }
             }
 
             Surface(
                 shape = RoundedCornerShape(999.dp),
-                color = statusColor.copy(alpha = 0.16f),
-                border = BorderStroke(0.75.dp, statusColor.copy(alpha = 0.5f)),
+                color = statusColor.copy(alpha = if (extendedColors.isDark) 0.16f else 0.10f),
+                border = BorderStroke(0.75.dp, statusColor.copy(alpha = 0.45f)),
             ) {
                 Text(
                     text = when {
@@ -1610,17 +1976,17 @@ private fun MobileRootSettingsContent(
             ) {
                 StatusPill(
                     label = if (rootEnv.mountMasterSupported) "Mount Master: Destekli" else "Mount Master: Yok",
-                    color = if (rootEnv.mountMasterSupported) AntigravityPalette.SuccessGreen else AntigravityPalette.WarningAmber,
+                    color = if (rootEnv.mountMasterSupported) extendedColors.success else extendedColors.warning,
                 )
                 rootEnv.managerPackageName?.let { pkg ->
-                    StatusPill(label = pkg, color = AntigravityPalette.NeonCyan)
+                    StatusPill(label = pkg, color = colorScheme.primary)
                 }
             }
             if (rootEnv.guidanceMessage.isNotBlank()) {
                 Text(
                     text = rootEnv.guidanceMessage,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -1643,27 +2009,31 @@ private fun MobileRootSettingsContent(
         val (chrootStatusText, chrootStatusColor, chrootDetail) = when (val cs = onboarding.chrootState) {
             ChrootState.NotInstalled -> Triple(
                 "Kurulu Değil",
-                AntigravityPalette.TextSecondary,
+                colorScheme.onSurfaceVariant,
                 "ARM64 rootfs henüz kurulmadı.",
             )
+
             is ChrootState.Installing -> Triple(
                 "Kuruluyor (${cs.progressPercent ?: 0}%)",
-                AntigravityPalette.NeonCyan,
+                extendedColors.accentCyan,
                 cs.stage,
             )
+
             is ChrootState.Mounted -> Triple(
                 "Bağlı (Mounted)",
-                AntigravityPalette.SuccessGreen,
+                extendedColors.success,
                 "Rootfs: ${cs.rootfsPath} • Core Mount: ${if (cs.mountStatus.allCoreMounted) "Hazır" else "Kısmi"}",
             )
+
             is ChrootState.Unmounted -> Triple(
                 "Ayrılmış (Unmounted)",
-                AntigravityPalette.WarningAmber,
+                extendedColors.warning,
                 "Rootfs: ${cs.rootfsPath}",
             )
+
             is ChrootState.Error -> Triple(
                 "Hata",
-                AntigravityPalette.CriticalRed,
+                extendedColors.critical,
                 cs.message,
             )
         }
@@ -1688,11 +2058,12 @@ private fun MobileRootSettingsContent(
                         text = chrootStatusText,
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
+                        color = colorScheme.onSurface,
                     )
                     Text(
                         text = chrootDetail,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -1704,7 +2075,7 @@ private fun MobileRootSettingsContent(
         if (!resolvedAgyVersion.isNullOrBlank()) {
             StatusPill(
                 label = "agy CLI: $resolvedAgyVersion",
-                color = AntigravityPalette.CarbonTeal,
+                color = extendedColors.accentCyan,
             )
         }
 
@@ -1712,14 +2083,14 @@ private fun MobileRootSettingsContent(
             Text(
                 text = onboarding.statusMessage,
                 style = MaterialTheme.typography.bodySmall,
-                color = AntigravityPalette.SuccessGreen,
+                color = extendedColors.success,
             )
         }
         if (!onboarding.errorMessage.isNullOrBlank()) {
             Text(
                 text = onboarding.errorMessage,
                 style = MaterialTheme.typography.bodySmall,
-                color = AntigravityPalette.CriticalRed,
+                color = extendedColors.critical,
             )
         }
 
@@ -1779,12 +2150,13 @@ private fun MobileRootSettingsContent(
                 Text(
                     text = "Yüzer Küre Opaklığı",
                     style = MaterialTheme.typography.titleSmall,
+                    color = colorScheme.onSurface,
                 )
                 Text(
                     text = "%${(state.settings.overlayOpacity.coerceIn(0.4f, 1.0f) * 100f).roundToInt()}",
                     style = MaterialTheme.typography.labelMedium,
                     fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = colorScheme.primary,
                 )
             }
             Slider(
@@ -1797,7 +2169,7 @@ private fun MobileRootSettingsContent(
             )
         }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        HorizontalDivider(color = extendedColors.cardBorder.copy(alpha = 0.75f))
 
         SettingsSwitchRow(
             title = "Donanım Kill-Switch (Ses+ + Ses- 500ms)",
@@ -1836,11 +2208,14 @@ private fun SettingsSectionCard(
     headerTrailing: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+        shape = RoundedCornerShape(20.dp),
+        color = settingsCardContainerColor(),
+        border = BorderStroke(1.dp, extendedColors.cardBorder),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -1859,12 +2234,13 @@ private fun SettingsSectionCard(
                         text = title,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
+                        color = colorScheme.onSurface,
                     )
                     if (!subtitle.isNullOrBlank()) {
                         Text(
                             text = subtitle,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -1885,6 +2261,8 @@ private fun SettingsSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
+    val colorScheme = MaterialTheme.colorScheme
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1903,11 +2281,12 @@ private fun SettingsSwitchRow(
                 text = title,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Medium,
+                color = colorScheme.onSurface,
             )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = colorScheme.onSurfaceVariant,
             )
         }
         Switch(
@@ -1922,9 +2301,10 @@ private fun StatusPill(
     label: String,
     color: Color,
 ) {
+    val extendedColors = LocalAntigravityColors.current
     Surface(
         shape = RoundedCornerShape(999.dp),
-        color = color.copy(alpha = 0.14f),
+        color = color.copy(alpha = if (extendedColors.isDark) 0.14f else 0.10f),
         border = BorderStroke(0.75.dp, color.copy(alpha = 0.45f)),
     ) {
         Text(
