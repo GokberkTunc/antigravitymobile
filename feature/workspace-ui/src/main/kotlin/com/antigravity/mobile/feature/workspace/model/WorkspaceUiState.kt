@@ -125,7 +125,7 @@ data class WorkspaceUiState(
     val activeProfile: AccountProfile? = null,
     val authFlowState: AuthFlowState = AuthFlowState.Idle,
     val projects: List<WorkspaceProject> = defaultProjects(),
-    val activeProject: WorkspaceProject = defaultProjects().first(),
+    val selectedProjectId: String? = defaultProjects().firstOrNull()?.id,
     val conversations: List<WorkspaceConversation> = emptyList(),
     val activeConversationId: String? = null,
     val expandedProjectIds: Set<String> = setOf("proj-sdcard"),
@@ -161,19 +161,46 @@ data class WorkspaceUiState(
     val isOverviewSheetVisible: Boolean = false,
     val selectedOverviewTab: OverviewTab = OverviewTab.SUBAGENTS,
     val selectedSwarmSubTab: SwarmSubTab = SwarmSubTab.BOARD,
+    val backStack: List<AppDestination> = listOf(AppDestination.Hub),
     val showSettings: Boolean = false,
     val selectedSettingsCategory: SettingsCategory = SettingsCategory.GENERAL,
     val showQuotaSheet: Boolean = false,
+    val showModelPickerSheet: Boolean = false,
+    val showComposerToolsSheet: Boolean = false,
     val isRefreshingQuota: Boolean = false,
     val settings: AppSettings = AppSettings(),
     val onboardingReturnToSettings: Boolean = false,
     val onboarding: OnboardingUiState = OnboardingUiState(),
     val showOnboarding: Boolean = false,
+    val exitConfirmPending: Boolean = false,
+    val exitConfirmMessage: String? = null,
+    val shouldExitApp: Boolean = false,
     val errorMessage: String? = null,
 ) {
+    val currentDestination: AppDestination
+        get() = backStack.lastOrNull() ?: AppDestination.Hub
+
+    val selectedProject: WorkspaceProject?
+        get() = selectedProjectId?.let { id -> projects.firstOrNull { it.id == id } }
+
+    /**
+     * Compatibility bridge for screens/sessions needing a non-null workspace root even when the
+     * user has genuinely deleted all projects ([projects] is empty and [selectedProject] is null).
+     */
+    val activeProject: WorkspaceProject
+        get() = selectedProject ?: projects.firstOrNull() ?: DEVICE_FALLBACK_PROJECT
+
     val activeConversation: WorkspaceConversation?
         get() = activeConversationId?.let { id -> conversations.firstOrNull { it.id == id } }
 }
+
+val DEVICE_FALLBACK_PROJECT = WorkspaceProject(
+    id = "device-fallback",
+    name = "Cihaz Depolama (/sdcard)",
+    rootPath = "/mnt/sdcard",
+    profileId = "default",
+    defaultPermissionMode = PermissionMode.ASK,
+)
 
 fun defaultProjects(): List<WorkspaceProject> = listOf(
     WorkspaceProject(
@@ -182,20 +209,6 @@ fun defaultProjects(): List<WorkspaceProject> = listOf(
         rootPath = "/mnt/sdcard",
         profileId = "default",
         defaultPermissionMode = PermissionMode.ASK,
-    ),
-    WorkspaceProject(
-        id = "proj-projects",
-        name = "Projeler (/sdcard/Projects)",
-        rootPath = "/mnt/sdcard/Projects",
-        profileId = "default",
-        defaultPermissionMode = PermissionMode.ASK,
-    ),
-    WorkspaceProject(
-        id = "proj-root",
-        name = "Tam Cihaz (/)",
-        rootPath = "/mnt/android_root",
-        profileId = "default",
-        defaultPermissionMode = PermissionMode.PLAN,
     ),
 )
 

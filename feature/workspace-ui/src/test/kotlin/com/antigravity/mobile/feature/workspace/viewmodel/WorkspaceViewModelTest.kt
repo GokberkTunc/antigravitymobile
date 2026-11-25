@@ -6,6 +6,7 @@ import com.antigravity.mobile.contracts.AccountRepository
 import com.antigravity.mobile.contracts.AcpClient
 import com.antigravity.mobile.contracts.AcpEvent
 import com.antigravity.mobile.contracts.AcpModel
+import com.antigravity.mobile.contracts.AcpSessionConfig
 import com.antigravity.mobile.contracts.AcpSessionInfo
 import com.antigravity.mobile.contracts.AcpSessionState
 import com.antigravity.mobile.contracts.AndroidMcpServer
@@ -40,16 +41,19 @@ import com.antigravity.mobile.contracts.UsageQuota
 import com.antigravity.mobile.contracts.VoiceState
 import com.antigravity.mobile.contracts.VoiceTranscriber
 import com.antigravity.mobile.feature.workspace.data.FileWorkspaceLocalStore
-import com.antigravity.mobile.feature.workspace.data.InMemoryWorkspaceLocalStore
+import com.antigravity.mobile.feature.workspace.model.AppDestination
 import com.antigravity.mobile.feature.workspace.model.AppThemeMode
+import com.antigravity.mobile.feature.workspace.model.DEVICE_FALLBACK_PROJECT
 import com.antigravity.mobile.feature.workspace.model.InterfaceLayoutMode
 import com.antigravity.mobile.feature.workspace.model.OverviewTab
+import com.antigravity.mobile.feature.workspace.model.QuotaBucketParser
+import com.antigravity.mobile.feature.workspace.model.QuotaWindowKind
 import com.antigravity.mobile.feature.workspace.model.RootfsSourceOption
 import com.antigravity.mobile.feature.workspace.model.SettingsCategory
 import com.antigravity.mobile.feature.workspace.model.WorkspaceAction
-import com.antigravity.mobile.feature.workspace.model.WorkspaceConversation
 import java.io.File
 import java.nio.file.Files
+import java.time.Instant
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -542,30 +546,48 @@ class WorkspaceViewModelTest {
     }
 
     @Test
-    fun `conversations CRUD supports create, auto-title, select across projects, rename, pin, and delete`() = runTest {
+    fun `conversations CRUD supports draft creation, auto-title, select across projects, rename, pin, and genuine delete`() = runTest {
         advanceUntilIdle()
 
-        // Initial default conversation is hydrated for proj-sdcard
-        val initialConvId = viewModel.uiState.value.activeConversationId
-        assertNotNull(initialConvId)
-        assertEquals(WorkspaceConversation.DEFAULT_TITLE, viewModel.uiState.value.activeConversation?.title)
+        // First-ever launch starts clean on Hub with 0 phantom conversations
+        assertEquals(AppDestination.Hub, viewModel.uiState.value.currentDestination)
+        assertTrue(viewModel.uiState.value.conversations.isEmpty())
+        assertNull(viewModel.uiState.value.activeConversationId)
 
-        // Sending first prompt auto-titles the default conversation and persists message
+        // CreateConversation without explicit title opens a fresh draft without cluttering conversations
+        viewModel.onAction(WorkspaceAction.CreateConversation(projectId = "proj-sdcard"))
+        advanceUntilIdle()
+        assertEquals(AppDestination.Conversation(null), viewModel.uiState.value.currentDestination)
+        assertNull(viewModel.uiState.value.activeConversationId)
+        assertTrue(viewModel.uiState.value.conversations.isEmpty())
+
+        // Sending first prompt materializes and auto-titles the conversation and updates destination
         viewModel.onAction(WorkspaceAction.SendMessage("Android 15 ayarlarını optimize et"))
         advanceUntilIdle()
+        val firstConvId = viewModel.uiState.value.activeConversationId
+        assertNotNull(firstConvId)
+        assertEquals(AppDestination.Conversation(firstConvId), viewModel.uiState.value.currentDestination)
         assertEquals("Android 15 ayarlarını optimize et", viewModel.uiState.value.activeConversation?.title)
         assertEquals(1, viewModel.uiState.value.activeConversation?.messages?.size)
 
-        // Create a new conversation under another project cancels previous session and switches cleanly
-        viewModel.onAction(WorkspaceAction.CreateConversation(projectId = "proj-projects", title = "Compose Refactor"))
+        // Create a second project and create an explicitly titled conversation under it
+        viewModel.onAction(
+            WorkspaceAction.CreateProject(
+                name = "Projeler",
+                rootPath = "/mnt/sdcard/Projects",
+            ),
+        )
+        advanceUntilIdle()
+        val secondProjectId = viewModel.uiState.value.selectedProjectId!!
+        viewModel.onAction(WorkspaceAction.CreateConversation(projectId = secondProjectId, title = "Compose Refactor"))
         advanceUntilIdle()
         coVerify { acpClient.cancelSession("sess-1") }
         val secondConv = viewModel.uiState.value.activeConversation
         assertNotNull(secondConv)
-        assertEquals("proj-projects", viewModel.uiState.value.activeProject.id)
+        assertEquals(secondProjectId, viewModel.uiState.value.activeProject.id)
         assertEquals("Compose Refactor", secondConv?.title)
         assertTrue(viewModel.uiState.value.messages.isEmpty())
-        assertTrue("proj-projects" in viewModel.uiState.value.expandedProjectIds)
+        assertTrue(secondProjectId in viewModel.uiState.value.expandedProjectIds)
 
         // Rename & pin conversation
         viewModel.onAction(WorkspaceAction.RenameConversation(secondConv!!.id, "UI Mimari Yükseltmesi"))
@@ -573,31 +595,30 @@ class WorkspaceViewModelTest {
         assertEquals("UI Mimari Yükseltmesi", viewModel.uiState.value.activeConversation?.title)
         assertTrue(viewModel.uiState.value.activeConversation?.isPinned == true)
 
-        // Selecting initial conversation switches activeProject back and restores its messages
-        viewModel.onAction(WorkspaceAction.SelectConversation(initialConvId!!))
+        // Selecting first conversation switches selectedProject back and restores its messages
+        viewModel.onAction(WorkspaceAction.SelectConversation(firstConvId!!))
         advanceUntilIdle()
         assertEquals("proj-sdcard", viewModel.uiState.value.activeProject.id)
-        assertEquals(initialConvId, viewModel.uiState.value.activeConversationId)
+        assertEquals(firstConvId, viewModel.uiState.value.activeConversationId)
         assertEquals(1, viewModel.uiState.value.messages.size)
 
-        // Deleting active conversation when it's the only one in proj-sdcard creates a fresh empty one
-        viewModel.onAction(WorkspaceAction.DeleteConversation(initialConvId))
+        // Deleting active conversation when it's the only one in proj-sdcard leaves NO phantom row and returns to Hub
+        viewModel.onAction(WorkspaceAction.DeleteConversation(firstConvId))
         advanceUntilIdle()
-        assertTrue(viewModel.uiState.value.conversations.none { it.id == initialConvId })
-        assertNotNull(viewModel.uiState.value.activeConversationId)
+        assertTrue(viewModel.uiState.value.conversations.none { it.id == firstConvId })
+        assertNull(viewModel.uiState.value.activeConversationId)
         assertTrue(viewModel.uiState.value.messages.isEmpty())
-        assertEquals("proj-sdcard", viewModel.uiState.value.activeConversation?.projectId)
+        assertEquals(AppDestination.Hub, viewModel.uiState.value.currentDestination)
 
-        // Deleting secondConv (non-active) removes it cleanly without changing activeConversationId
-        val activeBefore = viewModel.uiState.value.activeConversationId
+        // Deleting the last remaining conversation leaves conversations genuinely empty
         viewModel.onAction(WorkspaceAction.DeleteConversation(secondConv.id))
         advanceUntilIdle()
-        assertEquals(activeBefore, viewModel.uiState.value.activeConversationId)
-        assertTrue(viewModel.uiState.value.conversations.none { it.id == secondConv.id })
+        assertTrue(viewModel.uiState.value.conversations.isEmpty())
+        assertNull(viewModel.uiState.value.activeConversationId)
     }
 
     @Test
-    fun `projects CRUD supports create, rename, expand toggle, search, and cascading delete`() = runTest {
+    fun `projects CRUD supports create, rename, expand toggle, search, cascading delete, and genuine empty state`() = runTest {
         advanceUntilIdle()
 
         viewModel.onAction(
@@ -609,12 +630,14 @@ class WorkspaceViewModelTest {
         )
         advanceUntilIdle()
 
-        val createdProject = viewModel.uiState.value.activeProject
+        val createdProject = viewModel.uiState.value.selectedProject!!
         assertEquals("KernelSU Modülü", createdProject.name)
         assertTrue(createdProject.id in viewModel.uiState.value.expandedProjectIds)
+        assertTrue(viewModel.uiState.value.conversations.isEmpty())
 
-        // Add another conversation under createdProject
+        // Add two conversations under createdProject
         viewModel.onAction(WorkspaceAction.CreateConversation(createdProject.id, "Hook Tasarımı"))
+        viewModel.onAction(WorkspaceAction.CreateConversation(createdProject.id, "SELinux Analizi"))
         advanceUntilIdle()
         assertEquals(2, viewModel.uiState.value.conversations.count { it.projectId == createdProject.id })
 
@@ -628,13 +651,23 @@ class WorkspaceViewModelTest {
         viewModel.onAction(WorkspaceAction.UpdateSidebarSearch("Hook"))
         assertEquals("Hook", viewModel.uiState.value.sidebarSearchQuery)
 
-        // Delete project cascades and removes all its conversations, switching to another remaining project
+        // Delete createdProject cascades its conversations and switches cleanly to remaining proj-sdcard without phantom chat
         viewModel.onAction(WorkspaceAction.DeleteProject(createdProject.id))
         advanceUntilIdle()
         assertTrue(viewModel.uiState.value.projects.none { it.id == createdProject.id })
         assertTrue(viewModel.uiState.value.conversations.none { it.projectId == createdProject.id })
-        assertTrue(viewModel.uiState.value.activeProject.id != createdProject.id)
-        assertNotNull(viewModel.uiState.value.activeConversationId)
+        assertEquals("proj-sdcard", viewModel.uiState.value.selectedProjectId)
+        assertNull(viewModel.uiState.value.activeConversationId)
+
+        // Deleting the last project leaves projects genuinely empty and selectedProject null
+        viewModel.onAction(WorkspaceAction.DeleteProject("proj-sdcard"))
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.projects.isEmpty())
+        assertNull(viewModel.uiState.value.selectedProjectId)
+        assertNull(viewModel.uiState.value.selectedProject)
+        assertNull(viewModel.uiState.value.activeConversationId)
+        assertTrue(viewModel.uiState.value.messages.isEmpty())
+        assertEquals(DEVICE_FALLBACK_PROJECT, viewModel.uiState.value.activeProject)
     }
 
     @Test
@@ -769,5 +802,378 @@ class WorkspaceViewModelTest {
         assertFalse(viewModel.uiState.value.onboarding.isBusy)
         assertNull(viewModel.uiState.value.onboarding.errorMessage)
         assertNotNull(viewModel.uiState.value.onboarding.statusMessage)
+    }
+
+    @Test
+    fun `navigation back-stack unwinds menus, sheets, Onboarding, SettingsDetail, SettingsList, Conversation to Hub`() = runTest {
+        advanceUntilIdle()
+
+        assertEquals(listOf(AppDestination.Hub), viewModel.uiState.value.backStack)
+        assertEquals(AppDestination.Hub, viewModel.uiState.value.currentDestination)
+
+        // Hub -> Conversation -> SettingsList -> SettingsDetail(MOBILE_ROOT) -> Onboarding
+        viewModel.onAction(WorkspaceAction.NavigateToConversation(null))
+        assertEquals(
+            listOf(AppDestination.Hub, AppDestination.Conversation(null)),
+            viewModel.uiState.value.backStack,
+        )
+
+        viewModel.onAction(WorkspaceAction.OpenSettingsList)
+        assertEquals(AppDestination.SettingsList, viewModel.uiState.value.currentDestination)
+        assertTrue(viewModel.uiState.value.showSettings)
+
+        viewModel.onAction(WorkspaceAction.OpenSettingsDetail(SettingsCategory.MOBILE_ROOT))
+        assertEquals(
+            AppDestination.SettingsDetail(SettingsCategory.MOBILE_ROOT),
+            viewModel.uiState.value.currentDestination,
+        )
+        assertEquals(SettingsCategory.MOBILE_ROOT, viewModel.uiState.value.selectedSettingsCategory)
+
+        viewModel.onAction(WorkspaceAction.OpenOnboardingFromSettings(fromSettings = true))
+        assertEquals(AppDestination.Onboarding, viewModel.uiState.value.currentDestination)
+        assertTrue(viewModel.uiState.value.showOnboarding)
+        assertFalse(viewModel.uiState.value.showSettings)
+
+        // Back unwinds Onboarding -> SettingsDetail(MOBILE_ROOT) -> SettingsList -> Conversation
+        viewModel.onAction(WorkspaceAction.NavigateBack)
+        assertEquals(
+            AppDestination.SettingsDetail(SettingsCategory.MOBILE_ROOT),
+            viewModel.uiState.value.currentDestination,
+        )
+        assertFalse(viewModel.uiState.value.showOnboarding)
+        assertTrue(viewModel.uiState.value.showSettings)
+
+        viewModel.onAction(WorkspaceAction.NavigateBack)
+        assertEquals(AppDestination.SettingsList, viewModel.uiState.value.currentDestination)
+        assertTrue(viewModel.uiState.value.showSettings)
+
+        viewModel.onAction(WorkspaceAction.NavigateBack)
+        assertEquals(AppDestination.Conversation(null), viewModel.uiState.value.currentDestination)
+        assertFalse(viewModel.uiState.value.showSettings)
+
+        // Open overlays/menus on Conversation and verify exact dismissal priority
+        viewModel.onAction(WorkspaceAction.OpenOverviewSheet(OverviewTab.SWARM))
+        viewModel.onAction(WorkspaceAction.OpenQuotaSheet)
+        viewModel.onAction(WorkspaceAction.OpenComposerToolsSheet)
+        viewModel.onAction(WorkspaceAction.OpenModelPickerSheet)
+        // Re-open slash menu on top to verify #1 priority
+        viewModel.onAction(WorkspaceAction.OpenSlashMenu)
+        // Also ensure composer tools sheet is active along with model picker for full chain test
+        // (OpenModelPickerSheet closed tools sheet, so test tools sheet separately right after)
+        viewModel.onAction(WorkspaceAction.NavigateBack) // 1. slash menu
+        assertFalse(viewModel.uiState.value.showSlashMenu)
+        assertTrue(viewModel.uiState.value.showModelPickerSheet)
+
+        viewModel.onAction(WorkspaceAction.NavigateBack) // 2. model picker sheet
+        assertFalse(viewModel.uiState.value.showModelPickerSheet)
+
+        viewModel.onAction(WorkspaceAction.OpenComposerToolsSheet)
+        assertTrue(viewModel.uiState.value.showComposerToolsSheet)
+        viewModel.onAction(WorkspaceAction.NavigateBack) // 3. composer tools sheet
+        assertFalse(viewModel.uiState.value.showComposerToolsSheet)
+        assertTrue(viewModel.uiState.value.showQuotaSheet)
+
+        viewModel.onAction(WorkspaceAction.NavigateBack) // 4. quota sheet
+        assertFalse(viewModel.uiState.value.showQuotaSheet)
+        assertTrue(viewModel.uiState.value.isOverviewSheetVisible)
+
+        viewModel.onAction(WorkspaceAction.NavigateBack) // 5. overview sheet
+        assertFalse(viewModel.uiState.value.isOverviewSheetVisible)
+        assertEquals(AppDestination.Conversation(null), viewModel.uiState.value.currentDestination)
+
+        // 6. Back from Conversation returns to Hub (NEVER exits app!)
+        viewModel.onAction(WorkspaceAction.NavigateBack)
+        assertEquals(AppDestination.Hub, viewModel.uiState.value.currentDestination)
+        assertFalse(viewModel.uiState.value.shouldExitApp)
+        assertFalse(viewModel.uiState.value.exitConfirmPending)
+
+        // Hub -> Onboarding -> Back returns to Hub
+        viewModel.onAction(WorkspaceAction.OpenOnboardingFromSettings(fromSettings = false))
+        assertEquals(AppDestination.Onboarding, viewModel.uiState.value.currentDestination)
+        viewModel.onAction(WorkspaceAction.NavigateBack)
+        assertEquals(AppDestination.Hub, viewModel.uiState.value.currentDestination)
+    }
+
+    @Test
+    fun `double-back-to-exit on Hub exits within 2000ms window and resets after timeout`() = runTest {
+        var fakeNow = 10_000L
+        val timedVm = WorkspaceViewModel(
+            accountRepository = accountRepository,
+            acpClient = acpClient,
+            androidMcpServer = androidMcpServer,
+            automationScheduler = automationScheduler,
+            securityPolicyEngine = securityPolicyEngine,
+            voiceTranscriber = voiceTranscriber,
+            chrootManager = chrootManager,
+            rootExecutor = rootExecutor,
+            clockMs = { fakeNow },
+        )
+        advanceUntilIdle()
+
+        // First back press on Hub arms confirmation
+        timedVm.onAction(WorkspaceAction.NavigateBack)
+        assertTrue(timedVm.uiState.value.exitConfirmPending)
+        assertEquals(WorkspaceViewModel.EXIT_CONFIRM_MESSAGE, timedVm.uiState.value.exitConfirmMessage)
+        assertFalse(timedVm.uiState.value.shouldExitApp)
+
+        // Second press after > 2000ms does NOT exit; re-arms confirmation
+        fakeNow = 12_500L
+        timedVm.onAction(WorkspaceAction.NavigateBack)
+        assertTrue(timedVm.uiState.value.exitConfirmPending)
+        assertFalse(timedVm.uiState.value.shouldExitApp)
+
+        // DismissExitConfirm clears prompt cleanly
+        timedVm.onAction(WorkspaceAction.DismissExitConfirm)
+        assertFalse(timedVm.uiState.value.exitConfirmPending)
+        assertNull(timedVm.uiState.value.exitConfirmMessage)
+
+        // Re-arm and press again within 2000ms -> shouldExitApp becomes true
+        fakeNow = 20_000L
+        timedVm.onAction(WorkspaceAction.NavigateBack)
+        assertTrue(timedVm.uiState.value.exitConfirmPending)
+        fakeNow = 21_500L
+        timedVm.onAction(WorkspaceAction.NavigateBack)
+        assertTrue(timedVm.uiState.value.shouldExitApp)
+        assertFalse(timedVm.uiState.value.exitConfirmPending)
+        assertNull(timedVm.uiState.value.exitConfirmMessage)
+
+        timedVm.onAction(WorkspaceAction.ConsumeExitApp)
+        assertFalse(timedVm.uiState.value.shouldExitApp)
+    }
+
+    @Test
+    fun `deleting all projects persists empty projects and conversations across reloads without re-seeding`() = runTest {
+        val tempDir = Files.createTempDirectory("ag_empty_projects_persist_test").toFile()
+        try {
+            val storeFile = File(tempDir, "workspace_state.json")
+            val fileStore = FileWorkspaceLocalStore(file = storeFile, ioDispatcher = testDispatcher)
+
+            val firstVm = WorkspaceViewModel(
+                accountRepository = accountRepository,
+                acpClient = acpClient,
+                androidMcpServer = androidMcpServer,
+                automationScheduler = automationScheduler,
+                securityPolicyEngine = securityPolicyEngine,
+                voiceTranscriber = voiceTranscriber,
+                chrootManager = chrootManager,
+                rootExecutor = rootExecutor,
+                localStore = fileStore,
+            )
+            advanceUntilIdle()
+
+            // First-ever launch seeds 1 starter project and 0 conversations
+            assertEquals(1, firstVm.uiState.value.projects.size)
+            assertEquals("proj-sdcard", firstVm.uiState.value.selectedProjectId)
+            assertTrue(firstVm.uiState.value.conversations.isEmpty())
+
+            // Delete the starter project
+            firstVm.onAction(WorkspaceAction.DeleteProject("proj-sdcard"))
+            advanceUntilIdle()
+            assertTrue(firstVm.uiState.value.projects.isEmpty())
+            assertNull(firstVm.uiState.value.selectedProject)
+
+            // Reload into a brand-new ViewModel from the same persisted file -> MUST stay empty!
+            val reloadedVm = WorkspaceViewModel(
+                accountRepository = accountRepository,
+                acpClient = acpClient,
+                androidMcpServer = androidMcpServer,
+                automationScheduler = automationScheduler,
+                securityPolicyEngine = securityPolicyEngine,
+                voiceTranscriber = voiceTranscriber,
+                chrootManager = chrootManager,
+                rootExecutor = rootExecutor,
+                localStore = fileStore,
+            )
+            advanceUntilIdle()
+
+            assertTrue(reloadedVm.uiState.value.projects.isEmpty())
+            assertNull(reloadedVm.uiState.value.selectedProjectId)
+            assertNull(reloadedVm.uiState.value.selectedProject)
+            assertTrue(reloadedVm.uiState.value.conversations.isEmpty())
+            assertNull(reloadedVm.uiState.value.activeConversationId)
+            assertEquals(DEVICE_FALLBACK_PROJECT, reloadedVm.uiState.value.activeProject)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `QuotaBucketParser parses all 4 real TSV rows, treats 1970 epoch as null, and prefers 5h headline`() {
+        val realTsv = """
+            Gemini Models	Weekly Limit Remaining	52%	2026-12-01T08:19:42Z
+            Gemini Models	Five Hour Limit Remaining	91%	2026-11-25T17:30:55Z
+            Claude and GPT models	Weekly Limit Remaining	50%	2026-12-01T11:11:27Z
+            Claude and GPT models	Five Hour Limit Remaining	100%	1970-01-01T00:00:00Z
+        """.trimIndent()
+
+        val quota = UsageQuota(
+            planTier = AccountPlanTier.PRO,
+            remainingPercent = 52.0,
+            rawSummary = realTsv,
+        )
+
+        val buckets = QuotaBucketParser.parse(quota)
+        assertEquals(4, buckets.size)
+
+        val geminiWeekly = buckets[0]
+        assertEquals("Gemini Modelleri", geminiWeekly.displayGroup)
+        assertEquals(QuotaWindowKind.WEEKLY, geminiWeekly.windowKind)
+        assertEquals("Haftalık Limit", geminiWeekly.windowLabel)
+        assertEquals(52.0, geminiWeekly.remainingPercent, 0.001)
+        assertEquals(Instant.parse("2026-12-01T08:19:42Z").toEpochMilli(), geminiWeekly.resetAtEpochMs)
+
+        val geminiFiveHour = buckets[1]
+        assertEquals("Gemini Modelleri", geminiFiveHour.displayGroup)
+        assertEquals(QuotaWindowKind.FIVE_HOUR, geminiFiveHour.windowKind)
+        assertEquals("5 Saatlik Limit", geminiFiveHour.windowLabel)
+        assertEquals(91.0, geminiFiveHour.remainingPercent, 0.001)
+        assertEquals(Instant.parse("2026-11-25T17:30:55Z").toEpochMilli(), geminiFiveHour.resetAtEpochMs)
+
+        val claudeWeekly = buckets[2]
+        assertEquals("Claude & GPT", claudeWeekly.displayGroup)
+        assertEquals(QuotaWindowKind.WEEKLY, claudeWeekly.windowKind)
+        assertEquals(50.0, claudeWeekly.remainingPercent, 0.001)
+
+        val claudeFiveHour = buckets[3]
+        assertEquals("Claude & GPT", claudeFiveHour.displayGroup)
+        assertEquals(QuotaWindowKind.FIVE_HOUR, claudeFiveHour.windowKind)
+        assertEquals(100.0, claudeFiveHour.remainingPercent, 0.001)
+        assertNull(claudeFiveHour.resetAtEpochMs)
+        assertTrue(claudeFiveHour.isFullUnused)
+
+        // Primary headline MUST return Gemini 5-hour (91.0), NOT Gemini weekly (52.0)
+        assertEquals(91.0, QuotaBucketParser.primaryHeadlinePercent(quota, AcpModel.GEMINI_4_NEON)!!, 0.001)
+        assertEquals(52.0, QuotaBucketParser.weeklyPercent(quota, AcpModel.GEMINI_4_NEON)!!, 0.001)
+
+        // Fallback to remainingPercent when rawSummary is empty
+        val simpleQuota = UsageQuota(planTier = AccountPlanTier.FREE, remainingPercent = 73.5)
+        assertEquals(73.5, QuotaBucketParser.primaryHeadlinePercent(simpleQuota, AcpModel.GEMINI_4_NEON)!!, 0.001)
+        assertNull(QuotaBucketParser.weeklyPercent(simpleQuota, AcpModel.GEMINI_4_NEON))
+    }
+
+    @Test
+    fun `ensureActiveSession starts fresh session on ERROR, workspace change, or profile change and stores sessionId`() = runTest {
+        advanceUntilIdle()
+
+        // 1. Previous session in ERROR -> must NOT reuse; must call startSession and persist new sessionId
+        val freshAfterError = AcpSessionInfo(
+            sessionId = "sess-recovered",
+            profileId = "prof-1",
+            workspaceDir = "/mnt/sdcard",
+            state = AcpSessionState.READY,
+        )
+        acpSessionStateFlow.value = AcpSessionState.ERROR
+        coEvery { acpClient.startSession(any()) } answers {
+            activeSessionFlow.value = freshAfterError
+            acpSessionStateFlow.value = AcpSessionState.READY
+            Result.success(freshAfterError)
+        }
+        advanceUntilIdle()
+
+        viewModel.onAction(WorkspaceAction.SendMessage("Hata sonrası yeni oturum başlat"))
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { acpClient.startSession(any()) }
+        coVerify { acpClient.sendMessage("sess-recovered", "Hata sonrası yeni oturum başlat", emptyList()) }
+        assertEquals("sess-recovered", viewModel.uiState.value.activeConversation?.sessionId)
+
+        // 2. Switching workspace directory -> must NOT reuse sess-recovered; must start fresh session for new workspaceDir
+        viewModel.onAction(
+            WorkspaceAction.CreateProject(
+                name = "App Workspace",
+                rootPath = "/mnt/sdcard/Projects/app",
+            ),
+        )
+        advanceUntilIdle()
+
+        val workspaceConfigSlot = slot<AcpSessionConfig>()
+        val freshForWorkspace = AcpSessionInfo(
+            sessionId = "sess-workspace-2",
+            profileId = "prof-1",
+            workspaceDir = "/mnt/sdcard/Projects/app",
+            state = AcpSessionState.READY,
+        )
+        coEvery { acpClient.startSession(capture(workspaceConfigSlot)) } answers {
+            activeSessionFlow.value = freshForWorkspace
+            acpSessionStateFlow.value = AcpSessionState.READY
+            Result.success(freshForWorkspace)
+        }
+
+        viewModel.onAction(WorkspaceAction.SendMessage("Yeni proje dizininde analiz yap"))
+        advanceUntilIdle()
+
+        assertEquals("/mnt/sdcard/Projects/app", workspaceConfigSlot.captured.workspaceDir)
+        coVerify { acpClient.sendMessage("sess-workspace-2", "Yeni proje dizininde analiz yap", emptyList()) }
+        assertEquals("sess-workspace-2", viewModel.uiState.value.activeConversation?.sessionId)
+
+        // 3. Switching active profile -> must NOT reuse sess-workspace-2 (belongs to prof-1)
+        activeProfileFlow.value = backupProfile
+        advanceUntilIdle()
+
+        val profileConfigSlot = slot<AcpSessionConfig>()
+        val freshForProfile = AcpSessionInfo(
+            sessionId = "sess-prof-2",
+            profileId = "prof-2",
+            workspaceDir = "/mnt/sdcard/Projects/app",
+            state = AcpSessionState.READY,
+        )
+        coEvery { acpClient.startSession(capture(profileConfigSlot)) } answers {
+            activeSessionFlow.value = freshForProfile
+            acpSessionStateFlow.value = AcpSessionState.READY
+            Result.success(freshForProfile)
+        }
+
+        viewModel.onAction(WorkspaceAction.SendMessage("Yedek profil ile devam et"))
+        advanceUntilIdle()
+
+        assertEquals("prof-2", profileConfigSlot.captured.profileId)
+        coVerify { acpClient.sendMessage("sess-prof-2", "Yedek profil ile devam et", emptyList()) }
+        assertEquals("sess-prof-2", viewModel.uiState.value.activeConversation?.sessionId)
+
+        // 4. AWAITING_AUTH state -> must NOT reuse; must start fresh session
+        acpSessionStateFlow.value = AcpSessionState.AWAITING_AUTH
+        advanceUntilIdle()
+        val freshAfterAuth = AcpSessionInfo(
+            sessionId = "sess-post-auth",
+            profileId = "prof-2",
+            workspaceDir = "/mnt/sdcard/Projects/app",
+            state = AcpSessionState.READY,
+        )
+        coEvery { acpClient.startSession(any()) } answers {
+            activeSessionFlow.value = freshAfterAuth
+            acpSessionStateFlow.value = AcpSessionState.READY
+            Result.success(freshAfterAuth)
+        }
+        viewModel.onAction(WorkspaceAction.SendMessage("Auth sonrası devam"))
+        advanceUntilIdle()
+        coVerify { acpClient.sendMessage("sess-post-auth", "Auth sonrası devam", emptyList()) }
+        assertEquals("sess-post-auth", viewModel.uiState.value.activeConversation?.sessionId)
+
+        // 5. Conversation sessionId mismatch -> must NOT reuse existing session; must start/resume conversation's sessionId
+        val mismatchedExisting = AcpSessionInfo(
+            sessionId = "sess-unrelated",
+            profileId = "prof-2",
+            workspaceDir = "/mnt/sdcard/Projects/app",
+            state = AcpSessionState.READY,
+        )
+        activeSessionFlow.value = mismatchedExisting
+        acpSessionStateFlow.value = AcpSessionState.READY
+        advanceUntilIdle()
+
+        val mismatchSlot = slot<AcpSessionConfig>()
+        val resumedSession = AcpSessionInfo(
+            sessionId = "sess-post-auth",
+            profileId = "prof-2",
+            workspaceDir = "/mnt/sdcard/Projects/app",
+            state = AcpSessionState.READY,
+        )
+        coEvery { acpClient.startSession(capture(mismatchSlot)) } answers {
+            activeSessionFlow.value = resumedSession
+            Result.success(resumedSession)
+        }
+        viewModel.onAction(WorkspaceAction.SendMessage("Mevcut sohbet oturumuna dön"))
+        advanceUntilIdle()
+        assertEquals("sess-post-auth", mismatchSlot.captured.resumeConversationId)
+        coVerify { acpClient.sendMessage("sess-post-auth", "Mevcut sohbet oturumuna dön", emptyList()) }
     }
 }
