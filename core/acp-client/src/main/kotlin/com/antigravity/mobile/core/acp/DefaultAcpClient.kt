@@ -5,6 +5,8 @@ import com.antigravity.mobile.contracts.AcpEvent
 import com.antigravity.mobile.contracts.AcpSessionConfig
 import com.antigravity.mobile.contracts.AcpSessionInfo
 import com.antigravity.mobile.contracts.AcpSessionState
+import com.antigravity.mobile.contracts.ChrootManager
+import com.antigravity.mobile.contracts.ChrootState
 import com.antigravity.mobile.contracts.ContractsJson
 import com.antigravity.mobile.contracts.PermissionResponse
 import java.util.concurrent.ConcurrentHashMap
@@ -42,7 +44,11 @@ class DefaultAcpClient(
     private val requestTimeoutMs: Long = DEFAULT_REQUEST_TIMEOUT_MS,
     private val promptTimeoutMs: Long = DEFAULT_PROMPT_TIMEOUT_MS,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val chrootManager: ChrootManager? = null,
 ) : AcpClient {
+    private val effectiveChrootManager: ChrootManager?
+        get() = chrootManager ?: commandBuilder.chrootManagerOrNull()
+
     private val eventMapper = AcpEventMapper(json = json, clock = clock)
     private val lifecycleMutex = Mutex()
 
@@ -91,6 +97,14 @@ class DefaultAcpClient(
                 }
 
                 handleRpcErrorIfPresent(response.error, sessionId = config.resumeConversationId)?.let { ex ->
+                    if (response.error?.code != JsonRpcErrorCodes.AUTH_REQUIRED) {
+                        updateState(
+                            state = AcpSessionState.ERROR,
+                            sessionId = config.resumeConversationId,
+                            detail = response.error?.message,
+                            emitEvent = false,
+                        )
+                    }
                     return@withLock Result.failure(ex)
                 }
 
@@ -125,6 +139,7 @@ class DefaultAcpClient(
 
             var ephemeralTransport: JsonRpcTransport? = null
             try {
+                ensureChrootMountedLocked()
                 val config = AcpSessionConfig(profileId = profileId)
                 val launchRequest = commandBuilder.buildLaunchRequest(config)
                 val process = processLauncher.launch(launchRequest)
@@ -178,6 +193,14 @@ class DefaultAcpClient(
             )
 
             handleRpcErrorIfPresent(response.error, sessionId = sessionId)?.let { ex ->
+                if (response.error?.code != JsonRpcErrorCodes.AUTH_REQUIRED) {
+                    updateState(
+                        state = AcpSessionState.ERROR,
+                        sessionId = sessionId,
+                        detail = response.error?.message,
+                        emitEvent = false,
+                    )
+                }
                 return@withLock Result.failure(ex)
             }
 
@@ -365,7 +388,15 @@ class DefaultAcpClient(
         }
     }
 
+    private suspend fun ensureChrootMountedLocked() {
+        val manager = effectiveChrootManager ?: return
+        if (manager.state.value !is ChrootState.Mounted) {
+            manager.mountAll().getOrThrow()
+        }
+    }
+
     private suspend fun launchAndInitializeLocked(config: AcpSessionConfig): JsonRpcTransport {
+        ensureChrootMountedLocked()
         val launchRequest = commandBuilder.buildLaunchRequest(config)
         val process = processLauncher.launch(launchRequest)
         val transport = JsonRpcTransport(
@@ -602,10 +633,12 @@ class DefaultAcpClient(
                     },
                 )
                 attachments.filter { it.isNotBlank() }.forEach { path ->
+                    val name = path.substringAfterLast('/').substringAfterLast('\\').ifBlank { path }
                     add(
                         buildJsonObject {
                             put("type", "resource_link")
                             put("uri", path)
+                            put("name", name)
                         },
                     )
                 }
@@ -624,6 +657,22 @@ class DefaultAcpClient(
     private inner class ActiveTransportCallbacks : JsonRpcTransportCallbacks {
         override suspend fun onNotification(notification: IncomingJsonRpcMessage.Notification) {
             val currentSessionId = _activeSession.value?.sessionId
+            eventMapper.extractSessionInfoUpdate(
+                method = notification.method,
+                params = notification.params,
+                fallbackSessionId = currentSessionId,
+            )?.let { infoUpdate ->
+                val current = _activeSession.value
+                if (current != null &&
+                    (infoUpdate.sessionId.isBlank() || current.sessionId == infoUpdate.sessionId)
+                ) {
+                    _activeSession.value = current.copy(
+                        title = infoUpdate.title,
+                        updatedAtEpochMs = clock(),
+                    )
+                }
+            }
+
             val mapped = eventMapper.mapNotification(
                 method = notification.method,
                 params = notification.params,
