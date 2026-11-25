@@ -135,6 +135,8 @@ class AcpEventMapper(
         var allowOnceId = ParsedPermissionRequest.DEFAULT_ALLOW_ONCE_OPTION_ID
         var allowAlwaysId = ParsedPermissionRequest.DEFAULT_ALLOW_ALWAYS_OPTION_ID
         var rejectId = ParsedPermissionRequest.DEFAULT_REJECT_ONCE_OPTION_ID
+        var foundAllowOnce = false
+        var foundAllowAlways = false
 
         val options = obj["options"] as? JsonArray
         options?.forEach { item ->
@@ -142,14 +144,25 @@ class AcpEventMapper(
             val optionId = opt.stringOf("optionId", "id") ?: return@forEach
             val kind = opt.stringOf("kind", "type")?.lowercase().orEmpty()
             when {
-                kind == "allow_always" || optionId.contains("always", ignoreCase = true) ->
+                kind == "allow_always" || optionId.contains("always", ignoreCase = true) -> {
                     allowAlwaysId = optionId
-                kind == "allow_once" || kind.startsWith("allow") ->
+                    foundAllowAlways = true
+                }
+                kind == "allow_once" || kind.startsWith("allow") -> {
                     allowOnceId = optionId
+                    foundAllowOnce = true
+                }
                 kind == "reject_once" || kind == "reject_always" || kind.startsWith("reject") ||
                     kind.startsWith("deny") ->
                     rejectId = optionId
             }
+        }
+
+        // Real `agy 1.5.x` omits `allow_always` and only provides `allow` (`allow_once`) + `deny`
+        // (`reject_once`). When no `allow_always` option exists, fall back `allowAlwaysId` to the
+        // matched `allowOnceId` so `rememberForSession = true` still sends a valid allow `optionId`.
+        if (!foundAllowAlways && foundAllowOnce) {
+            allowAlwaysId = allowOnceId
         }
 
         return ParsedPermissionRequest(

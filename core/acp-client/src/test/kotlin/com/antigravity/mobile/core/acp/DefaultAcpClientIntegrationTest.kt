@@ -388,6 +388,69 @@ class DefaultAcpClientIntegrationTest {
         }
     }
 
+    @Test
+    fun `respondToPermission with rememberForSession sends allow when agy 1_5_17 omits allow_always`() = runBlocking {
+        val permissionReplyReceived = CompletableDeferred<JsonObject>()
+
+        val launcher = FakeAcpProcessLauncher {
+            FakeAcpProcess().also { proc ->
+                startScriptedServer(proc) { msg ->
+                    val id = msg["id"]
+                    val method = msg["method"]?.jsonPrimitive?.contentOrNull
+                    when {
+                        method == "initialize" ->
+                            proc.writeServerStdoutLine("""{"jsonrpc":"2.0","id":$id,"result":{"protocolVersion":1}}""")
+                        method == "session/new" ->
+                            proc.writeServerStdoutLine("""{"jsonrpc":"2.0","id":$id,"result":{"sessionId":"sess-agy1517"}}""")
+                        method == "session/prompt" -> {
+                            proc.writeServerStdoutLine(
+                                """{"jsonrpc":"2.0","id":"1","method":"session/request_permission","params":{"sessionId":"sess-agy1517","toolCall":{"sessionUpdate":"tool_call","toolCallId":"call_1517","name":"run_command","title":"uname -a","rawInput":{"CommandLine":"uname -a"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]}}""",
+                            )
+                        }
+                        method == null && id?.jsonPrimitive?.content == "1" -> {
+                            permissionReplyReceived.complete(msg)
+                            proc.writeServerStdoutLine(
+                                """{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}""",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        val client = DefaultAcpClient(AcpLaunchCommandBuilder(), launcher, Dispatchers.IO)
+        try {
+            client.startSession(AcpSessionConfig(profileId = "p-1517")).getOrThrow()
+
+            val permEventDeferred = async {
+                client.events.first { it is AcpEvent.PermissionRequest } as AcpEvent.PermissionRequest
+            }
+            val promptJob = async {
+                client.sendMessage("sess-agy1517", "Run uname -a")
+            }
+
+            val permEvent = withTimeout(5_000) { permEventDeferred.await() }
+            assertEquals("call_1517", permEvent.requestId)
+
+            val replyResult = client.respondToPermission(
+                PermissionResponse(
+                    requestId = "call_1517",
+                    approved = true,
+                    rememberForSession = true,
+                ),
+            )
+            assertTrue(replyResult.isSuccess)
+
+            val replyJson = withTimeout(5_000) { permissionReplyReceived.await() }
+            assertEquals("1", replyJson["id"]?.jsonPrimitive?.content)
+            val resultObj = replyJson["result"]!!.jsonObject
+            assertEquals("allow", resultObj["outcome"]!!.jsonObject["optionId"]?.jsonPrimitive?.content)
+            assertTrue(withTimeout(5_000) { promptJob.await() }.isSuccess)
+        } finally {
+            client.close()
+        }
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test
     fun `cancelSession sends session_cancel notification for Hardware Kill-Switch`() = runBlocking {

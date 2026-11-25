@@ -425,4 +425,53 @@ class AcpEventMapperTest {
         assertNull(mapper.mapNotification("session/update", userChunkParams, null))
         assertNull(mapper.extractSessionInfoUpdate("session/update", userChunkParams, null))
     }
+
+    @Test
+    fun `parses agy 1_5_17 permission options without allow_always by falling back allowAlwaysOptionId to allow`() {
+        val agy1517Params = buildJsonObject {
+            put("sessionId", "2704d51e-e7dc-41ce-9c86-6eb0a99e0dac")
+            put(
+                "toolCall",
+                buildJsonObject {
+                    put("sessionUpdate", "tool_call")
+                    put("toolCallId", "call_2692798567432381715")
+                    put("name", "run_command")
+                    put("title", "uname -a")
+                    put(
+                        "rawInput",
+                        buildJsonObject {
+                            put("CommandLine", "uname -a")
+                            put("WaitMsBeforeAsync", 5000)
+                        },
+                    )
+                },
+            )
+            put(
+                "options",
+                buildJsonArray {
+                    add(
+                        buildJsonObject {
+                            put("optionId", "allow")
+                            put("name", "Allow")
+                            put("kind", "allow_once")
+                        },
+                    )
+                    add(
+                        buildJsonObject {
+                            put("optionId", "deny")
+                            put("name", "Deny")
+                            put("kind", "reject_once")
+                        },
+                    )
+                },
+            )
+        }
+
+        val parsed = mapper.parsePermissionRequest(JsonPrimitive("1"), agy1517Params, null)
+        assertEquals("allow", parsed.allowOnceOptionId)
+        assertEquals("allow", parsed.allowAlwaysOptionId)
+        assertEquals("deny", parsed.rejectOptionId)
+        assertEquals("call_2692798567432381715", parsed.event.requestId)
+        assertEquals("uname -a", parsed.event.toolName)
+    }
 }
