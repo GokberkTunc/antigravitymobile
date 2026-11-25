@@ -13,12 +13,14 @@ import com.antigravity.mobile.contracts.SwarmInteractionEdge
 import com.antigravity.mobile.contracts.SwarmMemberInfo
 import com.antigravity.mobile.contracts.SwarmMemberStatus
 import com.antigravity.mobile.contracts.ToolCallStatus
+import java.time.Instant
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -288,5 +290,139 @@ class AcpEventMapperTest {
         assertEquals(2, sessions.size)
         assertEquals(AcpModel.GEMINI_4_HYDROGEN, sessions[0].model)
         assertEquals(AcpModel.GEMINI_4_CARBON, sessions[1].model)
+    }
+
+    @Test
+    fun `parses live agy acp session_new configOptions models block and ISO updatedAt`() {
+        val config = AcpSessionConfig(
+            profileId = "prof-live",
+            workspaceDir = "/mnt/sdcard/Proj",
+            model = AcpModel.GEMINI_4_CARBON,
+        )
+        val liveSessionNew = buildJsonObject {
+            put("sessionId", "3fa40d0b-51cc-4be1-9cbe-810ea1b6005a")
+            put(
+                "models",
+                buildJsonObject {
+                    put("currentModelId", "gemini-4-neon-high")
+                },
+            )
+            put(
+                "configOptions",
+                buildJsonArray {
+                    add(
+                        buildJsonObject {
+                            put("id", "model")
+                            put("currentValue", "gemini-4-neon")
+                        },
+                    )
+                    add(
+                        buildJsonObject {
+                            put("id", "thought_level")
+                            put("currentValue", "high")
+                        },
+                    )
+                },
+            )
+        }
+
+        val info = mapper.parseSessionInfo(liveSessionNew, config)
+        assertEquals("3fa40d0b-51cc-4be1-9cbe-810ea1b6005a", info.sessionId)
+        assertEquals(AcpModel.GEMINI_4_NEON, info.model)
+
+        // Fallback to models.currentModelId with effort suffix stripped
+        val modelsOnlyResult = buildJsonObject {
+            put("sessionId", "sess-models-only")
+            put(
+                "models",
+                buildJsonObject {
+                    put("currentModelId", "gemini-4-hydrogen-xhigh")
+                },
+            )
+        }
+        assertEquals(
+            AcpModel.GEMINI_4_HYDROGEN,
+            mapper.parseSessionInfo(modelsOnlyResult, config).model,
+        )
+
+        // ISO-8601 updatedAt in live session/list
+        val liveList = buildJsonObject {
+            put(
+                "sessions",
+                buildJsonArray {
+                    add(
+                        buildJsonObject {
+                            put("sessionId", "hist-iso")
+                            put("cwd", "/mnt/sdcard/Work")
+                            put("title", "Website Login And Tasks")
+                            put("updatedAt", "2026-11-15T20:30:00Z")
+                        },
+                    )
+                },
+            )
+        }
+        val parsedList = mapper.parseSessionList(liveList, "prof-live")
+        assertEquals(1, parsedList.size)
+        assertEquals("Website Login And Tasks", parsedList[0].title)
+        assertEquals(
+            Instant.parse("2026-11-15T20:30:00Z").toEpochMilli(),
+            parsedList[0].updatedAtEpochMs,
+        )
+    }
+
+    @Test
+    fun `extracts session_info_update title and silently ignores available_commands_update and user_message_chunk`() {
+        val infoParams = buildJsonObject {
+            put("sessionId", "sess-live")
+            put(
+                "update",
+                buildJsonObject {
+                    put("sessionUpdate", "session_info_update")
+                    put("title", "Acknowledge Instruction Test")
+                },
+            )
+        }
+        assertEquals(
+            SessionInfoUpdate(sessionId = "sess-live", title = "Acknowledge Instruction Test"),
+            mapper.extractSessionInfoUpdate("session/update", infoParams, null),
+        )
+        assertNull(mapper.mapNotification("session/update", infoParams, null))
+
+        val commandsParams = buildJsonObject {
+            put("sessionId", "sess-live")
+            put(
+                "update",
+                buildJsonObject {
+                    put("sessionUpdate", "available_commands_update")
+                    put(
+                        "availableCommands",
+                        buildJsonArray {
+                            add(buildJsonObject { put("name", "plan") })
+                        },
+                    )
+                },
+            )
+        }
+        assertNull(mapper.mapNotification("session/update", commandsParams, null))
+        assertNull(mapper.extractSessionInfoUpdate("session/update", commandsParams, null))
+
+        val userChunkParams = buildJsonObject {
+            put("sessionId", "sess-live")
+            put(
+                "update",
+                buildJsonObject {
+                    put("sessionUpdate", "user_message_chunk")
+                    put(
+                        "content",
+                        buildJsonObject {
+                            put("type", "text")
+                            put("text", "Reply with just OK")
+                        },
+                    )
+                },
+            )
+        }
+        assertNull(mapper.mapNotification("session/update", userChunkParams, null))
+        assertNull(mapper.extractSessionInfoUpdate("session/update", userChunkParams, null))
     }
 }

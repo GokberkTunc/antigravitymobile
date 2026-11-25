@@ -5,9 +5,12 @@ import com.antigravity.mobile.contracts.AcpEvent
 import com.antigravity.mobile.contracts.AcpModel
 import com.antigravity.mobile.contracts.AcpSessionConfig
 import com.antigravity.mobile.contracts.AcpSessionState
+import com.antigravity.mobile.contracts.ChrootManager
+import com.antigravity.mobile.contracts.ChrootState
 import com.antigravity.mobile.contracts.ContractsJson
 import com.antigravity.mobile.contracts.McpToolNames
 import com.antigravity.mobile.contracts.McpToolRisk
+import com.antigravity.mobile.contracts.MountStatus
 import com.antigravity.mobile.contracts.PermissionMode
 import com.antigravity.mobile.contracts.PermissionResponse
 import com.antigravity.mobile.contracts.SwarmBoardMessage
@@ -16,21 +19,25 @@ import com.antigravity.mobile.contracts.SwarmMemberInfo
 import com.antigravity.mobile.contracts.SwarmMemberStatus
 import com.antigravity.mobile.contracts.ThinkingEffort
 import com.antigravity.mobile.contracts.ToolCallStatus
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.concurrent.thread
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.encodeToJsonElement
@@ -40,6 +47,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -380,6 +388,7 @@ class DefaultAcpClientIntegrationTest {
         }
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
     fun `cancelSession sends session_cancel notification for Hardware Kill-Switch`() = runBlocking {
         val cancelReceived = CompletableDeferred<Unit>()
@@ -666,6 +675,200 @@ class DefaultAcpClientIntegrationTest {
             } finally {
                 client.close()
             }
+        }
+    }
+
+    @Test
+    fun `live agy acp protocol streams session_new and session_prompt cleanly with relative dir flags`() = runBlocking {
+        val launcher = FakeAcpProcessLauncher {
+            FakeAcpProcess().also { proc ->
+                startScriptedServer(proc) { msg ->
+                    val id = msg["id"]
+                    when (msg["method"]?.jsonPrimitive?.contentOrNull) {
+                        "initialize" -> proc.writeServerStdoutLine(
+                            """{"jsonrpc":"2.0","id":$id,"result":{"protocolVersion":1,"agentInfo":{"name":"Antigravity ACP Server","version":"1.4.11"}}}""",
+                        )
+                        "session/new" -> proc.writeServerStdoutLine(
+                            """{"jsonrpc":"2.0","id":$id,"result":{"sessionId":"live-sess-1","models":{"currentModelId":"gemini-4-neon-high"},"configOptions":[{"id":"model","currentValue":"gemini-4-neon"},{"id":"thought_level","currentValue":"high"}]}}""",
+                        )
+                        "session/prompt" -> {
+                            proc.writeServerStdoutLine(
+                                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"live-sess-1","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"plan","description":"Plan task"}]}}}""",
+                            )
+                            proc.writeServerStdoutLine(
+                                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"live-sess-1","update":{"sessionUpdate":"session_info_update","title":"Live ACP Chat"}}}""",
+                            )
+                            proc.writeServerStdoutLine(
+                                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"live-sess-1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Say hello"}}}}""",
+                            )
+                            proc.writeServerStdoutLine(
+                                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"live-sess-1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Planning concise greeting"}}}}""",
+                            )
+                            proc.writeServerStdoutLine(
+                                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"live-sess-1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"ui_get_tree","status":"pending","rawInput":{"max_depth":10}}}}""",
+                            )
+                            proc.writeServerStdoutLine(
+                                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"live-sess-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","title":"ui_get_tree","status":"completed","rawOutput":{"nodes":3}}}}""",
+                            )
+                            proc.writeServerStdoutLine(
+                                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"live-sess-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello from live agy!"}}}}""",
+                            )
+                            proc.writeServerStdoutLine(
+                                """{"jsonrpc":"2.0","id":$id,"result":{"stopReason":"end_turn","usage":{"inputTokens":120,"outputTokens":5,"totalTokens":125}}}""",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        val client = DefaultAcpClient(AcpLaunchCommandBuilder(), launcher, Dispatchers.IO)
+        try {
+            val session = client.startSession(
+                AcpSessionConfig(
+                    profileId = "48ed61eb-d59a-47cb-a068-29103797bb90",
+                    workspaceDir = "/mnt/sdcard/Projects/Demo",
+                ),
+            ).getOrThrow()
+
+            assertEquals("live-sess-1", session.sessionId)
+            assertEquals(AcpModel.GEMINI_4_NEON, session.model)
+
+            val launchArgs = launcher.recordedRequests.single().commandSpec.args
+            val appDataDir = launchArgs[launchArgs.indexOf("--app-data-dir") + 1]
+            val geminiDir = launchArgs[launchArgs.indexOf("--gemini-dir") + 1]
+            assertEquals("antigravity-cli", appDataDir)
+            assertEquals(".gemini", geminiDir)
+            assertFalse(appDataDir.startsWith("/"))
+            assertFalse(geminiDir.startsWith("/"))
+
+            client.events.test {
+                val promptResult = client.sendMessage("live-sess-1", "Say hello")
+                assertTrue(promptResult.isSuccess)
+
+                val received = mutableListOf<AcpEvent>()
+                while (true) {
+                    val ev = awaitItem()
+                    received.add(ev)
+                    if (ev is AcpEvent.SessionStateChanged && ev.state == AcpSessionState.READY) break
+                }
+
+                assertTrue(
+                    "Live notifications must never produce error events",
+                    received.none { it is AcpEvent.Error },
+                )
+                assertTrue(received.any { it is AcpEvent.ThoughtDelta && it.delta == "Planning concise greeting" })
+                assertTrue(received.any { it is AcpEvent.ToolCallUpdate && it.callId == "tc-1" && it.status == ToolCallStatus.COMPLETED })
+                assertTrue(received.any { it is AcpEvent.TextDelta && it.delta == "Hello from live agy!" })
+                assertEquals("Live ACP Chat", client.activeSession.value?.title)
+                assertEquals(AcpSessionState.READY, client.sessionState.value)
+                cancelAndIgnoreRemainingEvents()
+            }
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun `startSession auto-mounts chroot via commandBuilder chrootManager when unmounted`() = runBlocking {
+        val chrootStateFlow = MutableStateFlow<ChrootState>(ChrootState.Unmounted())
+        val chrootManager = mockk<ChrootManager>()
+        every { chrootManager.state } returns chrootStateFlow
+        coEvery { chrootManager.mountAll() } coAnswers {
+            val status = MountStatus(
+                procMounted = true,
+                sysMounted = true,
+                devMounted = true,
+                devPtsMounted = true,
+                sdcardMounted = true,
+                profilesMounted = true,
+            )
+            chrootStateFlow.value = ChrootState.Mounted(mountStatus = status)
+            Result.success(status)
+        }
+        coEvery { chrootManager.buildChrootCommand(any()) } returns listOf(
+            "su",
+            "--mount-master",
+            "-c",
+            "chroot /data/local/ag_rootfs /usr/local/bin/agy acp --stdio",
+        )
+
+        val launcher = FakeAcpProcessLauncher {
+            FakeAcpProcess().also { proc ->
+                startScriptedServer(proc) { msg ->
+                    val id = msg["id"]
+                    when (msg["method"]?.jsonPrimitive?.contentOrNull) {
+                        "initialize" -> proc.writeServerStdoutLine("""{"jsonrpc":"2.0","id":$id,"result":{"protocolVersion":1}}""")
+                        "session/new" -> proc.writeServerStdoutLine("""{"jsonrpc":"2.0","id":$id,"result":{"sessionId":"sess-mounted"}}""")
+                    }
+                }
+            }
+        }
+
+        // DefaultAcpClient inherits chrootManager from commandBuilder automatically
+        val client = DefaultAcpClient(
+            commandBuilder = AcpLaunchCommandBuilder(chrootManager = chrootManager),
+            processLauncher = launcher,
+            ioDispatcher = Dispatchers.IO,
+        )
+        try {
+            val first = client.startSession(AcpSessionConfig(profileId = "p-mount"))
+            assertTrue(first.isSuccess)
+            coVerify(exactly = 1) { chrootManager.mountAll() }
+
+            // Second startSession sees ChrootState.Mounted and skips remount
+            val second = client.startSession(AcpSessionConfig(profileId = "p-mount"))
+            assertTrue(second.isSuccess)
+            coVerify(exactly = 1) { chrootManager.mountAll() }
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun `startSession fails cleanly when chroot mount fails or session_new returns non-auth RPC error`() = runBlocking {
+        val chrootManager = mockk<ChrootManager>()
+        every { chrootManager.state } returns MutableStateFlow(ChrootState.Unmounted())
+        coEvery { chrootManager.mountAll() } returns Result.failure(IllegalStateException("Rootfs missing"))
+
+        val neverUsedLauncher = FakeAcpProcessLauncher {
+            error("Process must not spawn when chroot mount fails")
+        }
+        val mountFailClient = DefaultAcpClient(
+            commandBuilder = AcpLaunchCommandBuilder(),
+            processLauncher = neverUsedLauncher,
+            ioDispatcher = Dispatchers.IO,
+            chrootManager = chrootManager,
+        )
+        try {
+            val res = mountFailClient.startSession(AcpSessionConfig(profileId = "p-fail-mount"))
+            assertTrue(res.isFailure)
+            assertEquals(AcpSessionState.ERROR, mountFailClient.sessionState.value)
+            assertTrue(neverUsedLauncher.recordedRequests.isEmpty())
+        } finally {
+            mountFailClient.close()
+        }
+
+        val rpcErrLauncher = FakeAcpProcessLauncher {
+            FakeAcpProcess().also { proc ->
+                startScriptedServer(proc) { msg ->
+                    val id = msg["id"]
+                    when (msg["method"]?.jsonPrimitive?.contentOrNull) {
+                        "initialize" -> proc.writeServerStdoutLine("""{"jsonrpc":"2.0","id":$id,"result":{"protocolVersion":1}}""")
+                        "session/new" -> proc.writeServerStdoutLine(
+                            """{"jsonrpc":"2.0","id":$id,"error":{"code":-32603,"message":"Internal failure"}}""",
+                        )
+                    }
+                }
+            }
+        }
+        val rpcErrClient = DefaultAcpClient(AcpLaunchCommandBuilder(), rpcErrLauncher, Dispatchers.IO)
+        try {
+            val res = rpcErrClient.startSession(AcpSessionConfig(profileId = "p-rpc-err"))
+            assertTrue(res.isFailure)
+            assertEquals(AcpSessionState.ERROR, rpcErrClient.sessionState.value)
+        } finally {
+            rpcErrClient.close()
         }
     }
 

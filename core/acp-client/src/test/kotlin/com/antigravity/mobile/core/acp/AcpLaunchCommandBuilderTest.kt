@@ -2,11 +2,9 @@ package com.antigravity.mobile.core.acp
 
 import com.antigravity.mobile.contracts.AcpModel
 import com.antigravity.mobile.contracts.AcpSessionConfig
-import com.antigravity.mobile.contracts.ChrootCommandSpec
 import com.antigravity.mobile.contracts.ChrootConstants
 import com.antigravity.mobile.contracts.ChrootManager
 import com.antigravity.mobile.contracts.PermissionMode
-import com.antigravity.mobile.contracts.ProfilePaths
 import com.antigravity.mobile.contracts.RootEnvironmentInfo
 import com.antigravity.mobile.contracts.RootExecutor
 import com.antigravity.mobile.contracts.RootProviderType
@@ -51,9 +49,9 @@ class AcpLaunchCommandBuilderTest {
                 "--add-dir",
                 "/mnt/sdcard",
                 "--app-data-dir",
-                "/profiles/profile-123/data/antigravity-cli",
+                "antigravity-cli",
                 "--gemini-dir",
-                "/profiles/profile-123/home/.gemini",
+                ".gemini",
                 "--log-file",
                 "/profiles/profile-123/data/acp.log",
                 "--agent",
@@ -62,6 +60,11 @@ class AcpLaunchCommandBuilderTest {
             ),
             spec.args,
         )
+
+        val appDataDirValue = spec.args[spec.args.indexOf("--app-data-dir") + 1]
+        val geminiDirValue = spec.args[spec.args.indexOf("--gemini-dir") + 1]
+        assertFalse("--app-data-dir must be relative", appDataDirValue.startsWith("/"))
+        assertFalse("--gemini-dir must be relative", geminiDirValue.startsWith("/"))
 
         assertEquals("/profiles/profile-123/home", spec.environment["HOME"])
         assertEquals("/profiles/profile-123/config", spec.environment["XDG_CONFIG_HOME"])
@@ -214,6 +217,32 @@ class AcpLaunchCommandBuilderTest {
         assertEquals("'/mnt/sdcard/My Project'", AcpLaunchCommandBuilder.shellQuote("/mnt/sdcard/My Project"))
         assertEquals("'/tmp/a'\"'\"'b;rm -rf /'", AcpLaunchCommandBuilder.shellQuote("/tmp/a'b;rm -rf /"))
         assertEquals("''", AcpLaunchCommandBuilder.shellQuote(""))
+    }
+
+    @Test
+    fun `app-data-dir and gemini-dir flags are always relative while env isolates profile`() = runTest {
+        val builder = AcpLaunchCommandBuilder()
+        val profileId = "48ed61eb-d59a-47cb-a068-29103797bb90"
+        val request = builder.buildLaunchRequest(AcpSessionConfig(profileId = profileId))
+        val args = request.commandSpec.args
+
+        val appDataDir = args[args.indexOf("--app-data-dir") + 1]
+        val geminiDir = args[args.indexOf("--gemini-dir") + 1]
+        val logFile = args[args.indexOf("--log-file") + 1]
+
+        assertEquals(AcpLaunchCommandBuilder.DEFAULT_APP_DATA_DIR_NAME, appDataDir)
+        assertEquals(AcpLaunchCommandBuilder.DEFAULT_GEMINI_DIR_NAME, geminiDir)
+        assertFalse(appDataDir.startsWith("/"))
+        assertFalse(geminiDir.startsWith("/"))
+        assertEquals("/profiles/$profileId/data/acp.log", logFile)
+        assertEquals("/profiles/$profileId/home", request.commandSpec.environment["HOME"])
+        assertEquals("/profiles/$profileId/data", request.commandSpec.environment["XDG_DATA_HOME"])
+
+        val shellCmd = request.command.last()
+        assertTrue(shellCmd.contains("--app-data-dir antigravity-cli"))
+        assertTrue(shellCmd.contains("--gemini-dir .gemini"))
+        assertFalse(shellCmd.contains("--app-data-dir /"))
+        assertFalse(shellCmd.contains("--gemini-dir /"))
     }
 
     @Test(expected = IllegalArgumentException::class)

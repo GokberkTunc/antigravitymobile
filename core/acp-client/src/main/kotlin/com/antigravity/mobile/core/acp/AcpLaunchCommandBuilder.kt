@@ -20,6 +20,7 @@ class AcpLaunchCommandBuilder(
     private val rootfsPath: String = ChrootConstants.DEFAULT_ROOTFS_PATH,
     private val agyBinaryPath: String = ChrootConstants.DEFAULT_AGY_BINARY,
 ) {
+    internal fun chrootManagerOrNull(): ChrootManager? = chrootManager
     /**
      * Builds the [ChrootCommandSpec] containing verified `agy acp` 1.4.11 flags and isolated
      * profile environment variables.
@@ -98,10 +99,13 @@ class AcpLaunchCommandBuilder(
             add(dir)
         }
 
+        // `agy acp` requires `--app-data-dir` and `--gemini-dir` to be RELATIVE subdirectory names
+        // under `$HOME` (passing absolute paths causes `language server failed to start: must not be absolute`).
+        // Per-profile isolation is guaranteed by `HOME=/profiles/<profileId>/home` in the chroot env.
         add("--app-data-dir")
-        add("${profilePaths.chrootData}/antigravity-cli")
+        add(DEFAULT_APP_DATA_DIR_NAME)
         add("--gemini-dir")
-        add(profilePaths.chrootGeminiDir)
+        add(DEFAULT_GEMINI_DIR_NAME)
         add("--log-file")
         add("${profilePaths.chrootData}/acp.log")
 
@@ -177,6 +181,9 @@ class AcpLaunchCommandBuilder(
     }
 
     companion object {
+        const val DEFAULT_APP_DATA_DIR_NAME = "antigravity-cli"
+        const val DEFAULT_GEMINI_DIR_NAME = ".gemini"
+
         private val ENV_KEY_REGEX = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
         private val SAFE_UNQUOTED_REGEX = Regex("^[A-Za-z0-9_./:=+-]+$")
         private val MOUNT_MASTER_PROVIDERS = setOf(

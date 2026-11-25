@@ -10,6 +10,7 @@ import com.antigravity.mobile.contracts.McpToolNames
 import com.antigravity.mobile.contracts.McpToolRisk
 import com.antigravity.mobile.contracts.SwarmBoardState
 import com.antigravity.mobile.contracts.ToolCallStatus
+import java.time.Instant
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -18,8 +19,15 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
+
+/**
+ * Metadata update parsed from `session/update` (`sessionUpdate = "session_info_update"`).
+ */
+data class SessionInfoUpdate(
+    val sessionId: String,
+    val title: String,
+)
 
 /**
  * Parsed server-to-client `session/request_permission` call preserving the JSON-RPC [rpcId]
@@ -47,6 +55,28 @@ class AcpEventMapper(
     private val json: Json = ContractsJson,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
+    /**
+     * Extracts title metadata from real `agy acp` `session_info_update` notifications without
+     * perturbing [AcpSessionState] during active streaming turns.
+     */
+    fun extractSessionInfoUpdate(
+        method: String,
+        params: JsonObject?,
+        fallbackSessionId: String?,
+    ): SessionInfoUpdate? {
+        if (params == null) return null
+        if (method != "session/update" && method != "acp/session/update") return null
+        val update = (params["update"] as? JsonObject) ?: params
+        val kind = (update.stringOf("sessionUpdate", "type", "kind", "event")
+            ?: params.stringOf("type", "kind"))
+            ?.lowercase()
+            ?: return null
+        if (kind != "session_info_update") return null
+        val title = update.stringOf("title", "name")?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val sessionId = params.stringOf("sessionId", "session_id") ?: fallbackSessionId.orEmpty()
+        return SessionInfoUpdate(sessionId = sessionId, title = title)
+    }
+
     fun mapNotification(
         method: String,
         params: JsonObject?,
@@ -151,16 +181,20 @@ class AcpEventMapper(
             ?: fallbackSessionId
             ?: error("ACP response did not contain a sessionId")
 
+        val rawModel = nested.stringOf("model")
+            ?: extractModelFromConfigOptions(nested)
+            ?: extractModelFromModelsObject(nested)
+
         return AcpSessionInfo(
             sessionId = sessionId,
             profileId = nested.stringOf("profileId", "profile_id") ?: config.profileId,
             title = nested.stringOf("title", "name").orEmpty(),
             workspaceDir = nested.stringOf("workspaceDir", "workspace_dir", "cwd")
                 ?: config.workspaceDir,
-            model = parseModel(nested.stringOf("model")) ?: config.model,
+            model = parseModel(rawModel) ?: config.model,
             state = parseSessionState(nested.stringOf("state")) ?: AcpSessionState.READY,
-            createdAtEpochMs = nested.longOf("createdAtEpochMs", "createdAt", "created_at") ?: now,
-            updatedAtEpochMs = nested.longOf("updatedAtEpochMs", "updatedAt", "updated_at") ?: now,
+            createdAtEpochMs = nested.timestampOf("createdAtEpochMs", "createdAt", "created_at") ?: now,
+            updatedAtEpochMs = nested.timestampOf("updatedAtEpochMs", "updatedAt", "updated_at") ?: now,
         )
     }
 
@@ -179,17 +213,37 @@ class AcpEventMapper(
         return array.mapNotNull { element ->
             val obj = element as? JsonObject ?: return@mapNotNull null
             val sessionId = obj.stringOf("sessionId", "session_id", "id") ?: return@mapNotNull null
+            val rawModel = obj.stringOf("model")
+                ?: extractModelFromConfigOptions(obj)
+                ?: extractModelFromModelsObject(obj)
             AcpSessionInfo(
                 sessionId = sessionId,
                 profileId = obj.stringOf("profileId", "profile_id") ?: profileId,
                 title = obj.stringOf("title", "name").orEmpty(),
                 workspaceDir = obj.stringOf("workspaceDir", "workspace_dir", "cwd") ?: "/mnt/sdcard",
-                model = parseModel(obj.stringOf("model")) ?: AcpModel.GEMINI_4_NEON,
+                model = parseModel(rawModel) ?: AcpModel.GEMINI_4_NEON,
                 state = parseSessionState(obj.stringOf("state")) ?: AcpSessionState.READY,
-                createdAtEpochMs = obj.longOf("createdAtEpochMs", "createdAt", "created_at") ?: now,
-                updatedAtEpochMs = obj.longOf("updatedAtEpochMs", "updatedAt", "updated_at") ?: now,
+                createdAtEpochMs = obj.timestampOf("createdAtEpochMs", "createdAt", "created_at") ?: now,
+                updatedAtEpochMs = obj.timestampOf("updatedAtEpochMs", "updatedAt", "updated_at") ?: now,
             )
         }
+    }
+
+    private fun extractModelFromConfigOptions(obj: JsonObject): String? {
+        val options = obj["configOptions"] as? JsonArray ?: return null
+        for (item in options) {
+            val opt = item as? JsonObject ?: continue
+            val id = opt.stringOf("id", "category")?.lowercase()
+            if (id == "model") {
+                return opt.stringOf("currentValue", "value")
+            }
+        }
+        return null
+    }
+
+    private fun extractModelFromModelsObject(obj: JsonObject): String? {
+        val modelsObj = obj["models"] as? JsonObject ?: return null
+        return modelsObj.stringOf("currentModelId", "current_model_id", "modelId")
     }
 
     private fun mapSessionUpdate(sessionId: String, params: JsonObject): AcpEvent? {
@@ -214,6 +268,14 @@ class AcpEventMapper(
                 mapAuthRequired(sessionId, update)
             "session_state_changed", "state_changed", "session_state" ->
                 mapSessionStateChanged(sessionId, update)
+            "session_info_update" ->
+                mapSessionStateChanged(sessionId, update)
+            "available_commands_update",
+            "user_message_chunk",
+            "current_mode_update",
+            "config_option_update",
+            "plan",
+            -> null
             "error" ->
                 mapErrorEvent(sessionId, update)
             else -> null
@@ -320,7 +382,7 @@ class AcpEventMapper(
         obj: JsonObject,
     ): AcpEvent.SessionStateChanged? {
         val state = parseSessionState(obj.stringOf("state", "status")) ?: return null
-        val detail = obj.stringOf("detail", "message", "reason")
+        val detail = obj.stringOf("detail", "message", "reason", "title")
         return AcpEvent.SessionStateChanged(
             sessionId = sessionId,
             state = state,
@@ -360,13 +422,23 @@ class AcpEventMapper(
     }
 
     companion object {
+        private val EFFORT_SUFFIXES = listOf("-low", "-medium", "-high", "-xhigh", "-max")
+
         fun parseModel(raw: String?): AcpModel? {
             if (raw.isNullOrBlank()) return null
             val normalized = raw.trim().lowercase()
-            return AcpModel.entries.firstOrNull {
+            AcpModel.entries.firstOrNull {
                 it.cliId.equals(normalized, ignoreCase = true) ||
                     it.name.equals(normalized, ignoreCase = true) ||
                     it.displayName.equals(normalized, ignoreCase = true)
+            }?.let { return it }
+
+            val baseModel = EFFORT_SUFFIXES.firstNotNullOfOrNull { suffix ->
+                if (normalized.endsWith(suffix)) normalized.removeSuffix(suffix) else null
+            } ?: return null
+
+            return AcpModel.entries.firstOrNull {
+                it.cliId.equals(baseModel, ignoreCase = true)
             }
         }
 
@@ -431,10 +503,12 @@ private fun JsonObject.intOf(vararg keys: String): Int? {
     return null
 }
 
-private fun JsonObject.longOf(vararg keys: String): Long? {
+private fun JsonObject.timestampOf(vararg keys: String): Long? {
     for (key in keys) {
-        val value = (this[key] as? JsonPrimitive)?.longOrNull
-        if (value != null) return value
+        val primitive = this[key] as? JsonPrimitive ?: continue
+        primitive.longOrNull?.let { return it }
+        val text = primitive.contentOrNull?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+        runCatching { Instant.parse(text).toEpochMilli() }.getOrNull()?.let { return it }
     }
     return null
 }

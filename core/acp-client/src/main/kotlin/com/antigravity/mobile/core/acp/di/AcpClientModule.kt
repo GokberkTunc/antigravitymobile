@@ -39,10 +39,12 @@ object AcpClientModule {
     fun provideAcpClient(
         commandBuilder: AcpLaunchCommandBuilder,
         processLauncher: AcpProcessLauncher,
+        chrootManager: ChrootManager,
     ): AcpClient = DefaultAcpClient(
         commandBuilder = commandBuilder,
         processLauncher = processLauncher,
         ioDispatcher = Dispatchers.IO,
         json = ContractsJson,
+        chrootManager = chrootManager,
     )
 }
