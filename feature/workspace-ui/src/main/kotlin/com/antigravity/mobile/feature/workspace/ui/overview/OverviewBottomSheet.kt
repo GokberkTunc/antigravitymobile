@@ -40,6 +40,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -56,9 +57,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -73,7 +76,8 @@ import com.antigravity.mobile.feature.workspace.model.SwarmSubTab
 import com.antigravity.mobile.feature.workspace.model.WorkspaceAction
 import com.antigravity.mobile.feature.workspace.model.WorkspaceArtifact
 import com.antigravity.mobile.feature.workspace.model.WorkspaceUiState
-import com.antigravity.mobile.feature.workspace.theme.AntigravityPalette
+import com.antigravity.mobile.feature.workspace.theme.AntigravityExtendedColors
+import com.antigravity.mobile.feature.workspace.theme.LocalAntigravityColors
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -86,7 +90,9 @@ fun OverviewBottomSheet(
 ) {
     if (!state.isOverviewSheetVisible) return
 
+    val ext = LocalAntigravityColors.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val projectLabel = state.selectedProject?.name ?: "Cihaz Geneli"
 
     ModalBottomSheet(
         onDismissRequest = { onAction(WorkspaceAction.CloseOverviewSheet) },
@@ -95,17 +101,17 @@ fun OverviewBottomSheet(
         contentColor = MaterialTheme.colorScheme.onSurface,
         dragHandle = {
             BottomSheetDefaults.DragHandle(
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.8f),
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f),
             )
         },
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 390.dp, max = 650.dp)
-                .padding(bottom = 20.dp),
+                .heightIn(min = 400.dp, max = 660.dp)
+                .padding(bottom = 22.dp),
         ) {
-            // Sheet Header
+            // Antigravity 2.0 Auxiliary Pane Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -115,42 +121,57 @@ fun OverviewBottomSheet(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f),
                 ) {
                     Surface(
-                        shape = RoundedCornerShape(9.dp),
-                        color = AntigravityPalette.NeonCyan.copy(alpha = 0.14f),
-                        border = BorderStroke(1.dp, AntigravityPalette.NeonCyan.copy(alpha = 0.35f)),
-                        modifier = Modifier.size(30.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        border = BorderStroke(
+                            1.dp,
+                            MaterialTheme.colorScheme.primary.copy(alpha = if (ext.isDark) 0.35f else 0.2f),
+                        ),
+                        modifier = Modifier.size(34.dp),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Default.Hub,
                                 contentDescription = null,
-                                tint = AntigravityPalette.NeonCyan,
-                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp),
                             )
                         }
                     }
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Çalışma Alanı Özeti",
+                            text = "Çalışma Alanı Paneli",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
-                            text = state.activeProject.name,
-                            style = MaterialTheme.typography.labelSmall,
+                            text = projectLabel,
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
+                IconButton(
+                    onClick = { onAction(WorkspaceAction.CloseOverviewSheet) },
+                    modifier = Modifier.size(34.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Paneli kapat",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             // Refined Segmented Tab Pills
             OverviewSegmentedTabBar(
@@ -159,14 +180,12 @@ fun OverviewBottomSheet(
                 swarmCount = state.swarmBoardState.members.size,
                 artifactsDiffsCount = state.diffs.size + state.artifacts.size,
                 onSelectTab = { onAction(WorkspaceAction.SelectOverviewTab(it)) },
-                modifier = Modifier.padding(horizontal = 14.dp),
+                modifier = Modifier.padding(horizontal = 16.dp),
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            HorizontalDivider(
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-            )
+            HorizontalDivider(color = ext.cardBorder)
 
             when (state.selectedOverviewTab) {
                 OverviewTab.SUBAGENTS -> SubagentsTabContent(
@@ -199,10 +218,12 @@ private fun OverviewSegmentedTabBar(
     onSelectTab: (OverviewTab) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val ext = LocalAntigravityColors.current
+
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLowest,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(1.dp, ext.cardBorder),
         modifier = modifier.fillMaxWidth(),
     ) {
         Row(
@@ -230,7 +251,7 @@ private fun OverviewSegmentedTabBar(
                 count = artifactsDiffsCount,
                 selected = selectedTab == OverviewTab.ARTIFACTS_DIFFS,
                 onClick = { onSelectTab(OverviewTab.ARTIFACTS_DIFFS) },
-                modifier = Modifier.weight(1.2f),
+                modifier = Modifier.weight(1.22f),
             )
         }
     }
@@ -244,16 +265,22 @@ private fun SegmentedTabPill(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val ext = LocalAntigravityColors.current
+
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(10.dp),
         color = if (selected) {
-            MaterialTheme.colorScheme.surfaceContainer
+            MaterialTheme.colorScheme.surface
         } else {
             Color.Transparent
         },
+        shadowElevation = if (selected && !ext.isDark) 1.dp else 0.dp,
         border = if (selected) {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f))
+            BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.primary.copy(alpha = if (ext.isDark) 0.45f else 0.25f),
+            )
         } else {
             null
         },
@@ -281,16 +308,16 @@ private fun SegmentedTabPill(
                 Surface(
                     shape = CircleShape,
                     color = if (selected) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                        MaterialTheme.colorScheme.primaryContainer
                     } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                        MaterialTheme.colorScheme.surfaceContainerHigh
                     },
                 ) {
                     Text(
                         text = count.toString(),
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                         color = if (selected) {
-                            MaterialTheme.colorScheme.primary
+                            MaterialTheme.colorScheme.onPrimaryContainer
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
@@ -309,18 +336,20 @@ private fun OverviewEmptyState(
     title: String,
     subtitle: String,
 ) {
+    val ext = LocalAntigravityColors.current
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 40.dp),
+            .padding(horizontal = 28.dp, vertical = 42.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Surface(
-            shape = RoundedCornerShape(14.dp),
+            shape = CircleShape,
             color = MaterialTheme.colorScheme.surfaceContainer,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)),
-            modifier = Modifier.size(44.dp),
+            border = BorderStroke(1.dp, ext.cardBorder),
+            modifier = Modifier.size(48.dp),
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
@@ -336,11 +365,13 @@ private fun OverviewEmptyState(
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center,
         )
         Text(
             text = subtitle,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
         )
     }
 }
@@ -349,6 +380,9 @@ private fun OverviewEmptyState(
 private fun SubagentsTabContent(
     subagents: List<SubagentItem>,
 ) {
+    val ext = LocalAntigravityColors.current
+    val secondaryColor = MaterialTheme.colorScheme.secondary
+
     if (subagents.isEmpty()) {
         OverviewEmptyState(
             icon = Icons.Default.SmartToy,
@@ -361,15 +395,15 @@ private fun SubagentsTabContent(
     LazyColumn(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(14.dp),
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         items(subagents, key = { it.id }) { agent ->
-            val statusColor = memberStatusColor(agent.status)
+            val statusColor = memberStatusColor(agent.status, ext, secondaryColor)
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.surfaceContainer,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+                border = BorderStroke(1.dp, ext.cardBorder),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(modifier = Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -400,8 +434,8 @@ private fun SubagentsTabContent(
                         }
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = statusColor.copy(alpha = 0.15f),
-                            border = BorderStroke(1.dp, statusColor.copy(alpha = 0.4f)),
+                            color = statusColor.copy(alpha = if (ext.isDark) 0.16f else 0.12f),
+                            border = BorderStroke(1.dp, statusColor.copy(alpha = 0.35f)),
                         ) {
                             Text(
                                 text = agent.status.name,
@@ -421,7 +455,7 @@ private fun SubagentsTabContent(
                         Text(
                             text = agent.lastUpdate,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f),
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -439,11 +473,14 @@ private fun SwarmTabContent(
     selectedSubTab: SwarmSubTab,
     onSelectSubTab: (SwarmSubTab) -> Unit,
 ) {
+    val ext = LocalAntigravityColors.current
+    val secondaryColor = MaterialTheme.colorScheme.secondary
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (boardState.swarmTitle.isNotBlank()) {
             Text(
@@ -487,11 +524,11 @@ private fun SwarmTabContent(
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
                                 color = MaterialTheme.colorScheme.surfaceContainer,
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
+                                border = BorderStroke(1.dp, ext.cardBorder),
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Column(
-                                    modifier = Modifier.padding(11.dp),
+                                    modifier = Modifier.padding(12.dp),
                                     verticalArrangement = Arrangement.spacedBy(5.dp),
                                 ) {
                                     Row(
@@ -504,15 +541,15 @@ private fun SwarmTabContent(
                                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                                         ) {
                                             Surface(
-                                                shape = RoundedCornerShape(5.dp),
-                                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = MaterialTheme.colorScheme.primaryContainer,
                                             ) {
                                                 Text(
                                                     text = "#${msg.seq}",
                                                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                                    color = MaterialTheme.colorScheme.primary,
-                                                    fontWeight = FontWeight.Bold,
-                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                                 )
                                             }
                                             Text(
@@ -554,11 +591,11 @@ private fun SwarmTabContent(
                 } else {
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(boardState.members, key = { it.name }) { member ->
-                            val color = memberStatusColor(member.status)
+                            val color = memberStatusColor(member.status, ext, secondaryColor)
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
                                 color = MaterialTheme.colorScheme.surfaceContainer,
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+                                border = BorderStroke(1.dp, ext.cardBorder),
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Column(
@@ -584,12 +621,13 @@ private fun SwarmTabContent(
                                                 text = member.name,
                                                 style = MaterialTheme.typography.titleSmall,
                                                 fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSurface,
                                             )
                                         }
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
-                                            color = color.copy(alpha = 0.15f),
-                                            border = BorderStroke(1.dp, color.copy(alpha = 0.4f)),
+                                            color = color.copy(alpha = if (ext.isDark) 0.16f else 0.12f),
+                                            border = BorderStroke(1.dp, color.copy(alpha = 0.35f)),
                                         ) {
                                             Text(
                                                 text = member.status.name,
@@ -608,11 +646,8 @@ private fun SwarmTabContent(
                                             member.ownedModules.forEach { mod ->
                                                 Surface(
                                                     shape = RoundedCornerShape(6.dp),
-                                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-                                                    border = BorderStroke(
-                                                        1.dp,
-                                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
-                                                    ),
+                                                    color = MaterialTheme.colorScheme.surface,
+                                                    border = BorderStroke(1.dp, ext.cardBorder),
                                                 ) {
                                                     Text(
                                                         text = mod,
@@ -653,20 +688,22 @@ private fun SwarmSubTabPill(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
+    val ext = LocalAntigravityColors.current
+
     Surface(
         onClick = onClick,
         shape = CircleShape,
         color = if (selected) {
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+            MaterialTheme.colorScheme.primaryContainer
         } else {
             MaterialTheme.colorScheme.surfaceContainer
         },
         border = BorderStroke(
             1.dp,
             if (selected) {
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                MaterialTheme.colorScheme.primary.copy(alpha = if (ext.isDark) 0.55f else 0.3f)
             } else {
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)
+                ext.cardBorder
             },
         ),
     ) {
@@ -675,7 +712,7 @@ private fun SwarmSubTabPill(
             style = MaterialTheme.typography.labelSmall,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
             color = if (selected) {
-                MaterialTheme.colorScheme.primary
+                MaterialTheme.colorScheme.onPrimaryContainer
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
             },
@@ -689,6 +726,8 @@ private fun SwarmSubTabPill(
 private fun SwarmInteractionGraph(
     boardState: SwarmBoardState,
 ) {
+    val ext = LocalAntigravityColors.current
+    val secondaryColor = MaterialTheme.colorScheme.secondary
     val members = boardState.members
     if (members.isEmpty()) {
         OverviewEmptyState(
@@ -699,11 +738,15 @@ private fun SwarmInteractionGraph(
         return
     }
 
+    val edgeLineColor = ext.accentCyan.copy(alpha = if (ext.isDark) 0.6f else 0.5f)
+    val guideRingColor = ext.cardBorder.copy(alpha = 0.7f)
+    val nodeColors = members.associate { it.name to memberStatusColor(it.status, ext, secondaryColor) }
+
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Surface(
             shape = RoundedCornerShape(14.dp),
-            color = AntigravityPalette.CodeBlockBg,
-            border = BorderStroke(1.dp, AntigravityPalette.BorderHairline),
+            color = ext.codeBlockBackground,
+            border = BorderStroke(1.dp, ext.cardBorder),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(210.dp),
@@ -716,6 +759,14 @@ private fun SwarmInteractionGraph(
                 val centerX = size.width / 2f
                 val centerY = size.height / 2f
                 val radius = (minOf(size.width, size.height) * 0.34f).coerceAtLeast(48f)
+
+                // Subtle orbit guide ring
+                drawCircle(
+                    color = guideRingColor,
+                    radius = radius,
+                    center = Offset(centerX, centerY),
+                    style = Stroke(width = 1.dp.toPx()),
+                )
 
                 val positions = members.mapIndexed { index, member ->
                     val angle = (2.0 * PI * index / members.size) - (PI / 2.0)
@@ -730,7 +781,7 @@ private fun SwarmInteractionGraph(
                     val end = positions[edge.toMember]
                     if (start != null && end != null) {
                         drawLine(
-                            color = AntigravityPalette.NeonCyan.copy(alpha = 0.6f),
+                            color = edgeLineColor,
                             start = start,
                             end = end,
                             strokeWidth = (2f + edge.messageCount.coerceAtMost(6)).dp.toPx() * 0.45f,
@@ -741,9 +792,9 @@ private fun SwarmInteractionGraph(
                 // Draw member nodes
                 members.forEach { member ->
                     val pos = positions[member.name] ?: return@forEach
-                    val color = memberStatusColor(member.status)
+                    val color = nodeColors[member.name] ?: ext.accentCyan
                     drawCircle(
-                        color = color.copy(alpha = 0.22f),
+                        color = color.copy(alpha = 0.2f),
                         radius = 22.dp.toPx(),
                         center = pos,
                     )
@@ -762,14 +813,14 @@ private fun SwarmInteractionGraph(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             members.forEach { member ->
-                val color = memberStatusColor(member.status)
+                val color = nodeColors[member.name] ?: ext.accentCyan
                 Surface(
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.surfaceContainer,
-                    border = BorderStroke(1.dp, color.copy(alpha = 0.45f)),
+                    border = BorderStroke(1.dp, color.copy(alpha = 0.4f)),
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
                     ) {
@@ -794,7 +845,7 @@ private fun SwarmInteractionGraph(
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.surfaceContainer,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)),
+                border = BorderStroke(1.dp, ext.cardBorder),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(
@@ -834,7 +885,7 @@ private fun ArtifactsAndDiffsTabContent(
     LazyColumn(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(14.dp),
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (diffs.isNotEmpty()) {
@@ -844,9 +895,9 @@ private fun ArtifactsAndDiffsTabContent(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Icon(
-                        Icons.Default.Code,
+                        imageVector = Icons.Default.Code,
                         contentDescription = null,
-                        tint = AntigravityPalette.NeonCyan,
+                        tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(16.dp),
                     )
                     Text(
@@ -874,9 +925,9 @@ private fun ArtifactsAndDiffsTabContent(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Icon(
-                        Icons.Default.Description,
+                        imageVector = Icons.Default.Description,
                         contentDescription = null,
-                        tint = AntigravityPalette.HydrogenViolet,
+                        tint = MaterialTheme.colorScheme.secondary,
                         modifier = Modifier.size(16.dp),
                     )
                     Text(
@@ -900,26 +951,28 @@ fun DiffReviewCard(
     onApprove: () -> Unit,
     onReject: () -> Unit,
 ) {
+    val ext = LocalAntigravityColors.current
+
     val statusColor = when (diff.status) {
-        DiffApprovalStatus.APPROVED -> AntigravityPalette.SuccessGreen
-        DiffApprovalStatus.REJECTED -> AntigravityPalette.CriticalRed
-        DiffApprovalStatus.PENDING -> AntigravityPalette.WarningAmber
+        DiffApprovalStatus.APPROVED -> ext.success
+        DiffApprovalStatus.REJECTED -> ext.critical
+        DiffApprovalStatus.PENDING -> ext.warning
     }
 
     val changeTypeColor = when (diff.changeType) {
-        DiffChangeType.ADDED -> AntigravityPalette.SuccessGreen
-        DiffChangeType.DELETED -> AntigravityPalette.CriticalRed
-        DiffChangeType.RENAMED -> AntigravityPalette.HydrogenViolet
-        DiffChangeType.MODIFIED -> AntigravityPalette.NeonCyan
+        DiffChangeType.ADDED -> ext.success
+        DiffChangeType.DELETED -> ext.critical
+        DiffChangeType.RENAMED -> MaterialTheme.colorScheme.secondary
+        DiffChangeType.MODIFIED -> ext.accentCyan
     }
 
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = AntigravityPalette.CodeBlockBg,
-        border = BorderStroke(1.dp, statusColor.copy(alpha = 0.45f)),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(1.dp, statusColor.copy(alpha = 0.42f)),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Top,
@@ -933,44 +986,43 @@ fun DiffReviewCard(
                         text = diff.filePath,
                         style = MaterialTheme.typography.labelLarge,
                         fontFamily = FontFamily.Monospace,
-                        color = AntigravityPalette.TextPrimary,
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    // Smooth Diff Viewer Badges
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = AntigravityPalette.DiffAddBg,
-                            border = BorderStroke(1.dp, AntigravityPalette.DiffAddFg.copy(alpha = 0.35f)),
+                            color = ext.diffAddBackground,
+                            border = BorderStroke(1.dp, ext.diffAddForeground.copy(alpha = 0.3f)),
                         ) {
                             Text(
                                 text = "+${diff.additions}",
                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                color = AntigravityPalette.DiffAddFg,
+                                color = ext.diffAddForeground,
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                             )
                         }
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = AntigravityPalette.DiffRemoveBg,
-                            border = BorderStroke(1.dp, AntigravityPalette.DiffRemoveFg.copy(alpha = 0.35f)),
+                            color = ext.diffRemoveBackground,
+                            border = BorderStroke(1.dp, ext.diffRemoveForeground.copy(alpha = 0.3f)),
                         ) {
                             Text(
                                 text = "-${diff.deletions}",
                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                color = AntigravityPalette.DiffRemoveFg,
+                                color = ext.diffRemoveForeground,
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                             )
                         }
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = changeTypeColor.copy(alpha = 0.14f),
+                            color = changeTypeColor.copy(alpha = if (ext.isDark) 0.16f else 0.12f),
                         ) {
                             Text(
                                 text = diff.changeType.name,
@@ -985,91 +1037,99 @@ fun DiffReviewCard(
                 Spacer(modifier = Modifier.width(8.dp))
                 Surface(
                     shape = CircleShape,
-                    color = statusColor.copy(alpha = 0.16f),
-                    border = BorderStroke(1.dp, statusColor.copy(alpha = 0.45f)),
+                    color = statusColor.copy(alpha = if (ext.isDark) 0.16f else 0.12f),
+                    border = BorderStroke(1.dp, statusColor.copy(alpha = 0.4f)),
                 ) {
                     Text(
                         text = diff.status.name,
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                         color = statusColor,
-                        fontWeight = FontWeight.Bold,
+                        fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                     )
                 }
             }
 
-            HorizontalDivider(color = AntigravityPalette.BorderHairline)
+            HorizontalDivider(color = ext.cardBorder)
 
-            // Line-by-line mobile-friendly unified diff
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(AntigravityPalette.DeepSpace)
-                    .horizontalScroll(rememberScrollState())
-                    .padding(vertical = 4.dp),
+            // Line-by-line Light & Dark Theme-Adaptive Unified Diff Viewer
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = ext.codeBlockBackground,
+                border = BorderStroke(1.dp, ext.cardBorder),
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                diff.unifiedDiff.lines().forEach { line ->
-                    val (bg, fg) = when {
-                        line.startsWith("+") && !line.startsWith("+++") ->
-                            AntigravityPalette.DiffAddBg to AntigravityPalette.DiffAddFg
-                        line.startsWith("-") && !line.startsWith("---") ->
-                            AntigravityPalette.DiffRemoveBg to AntigravityPalette.DiffRemoveFg
-                        line.startsWith("@@") ->
-                            Color(0xFF13223D) to AntigravityPalette.NeonCyan
-                        else ->
-                            Color.Transparent to Color(0xFFCBD5E1)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(vertical = 4.dp),
+                ) {
+                    diff.unifiedDiff.lines().forEach { line ->
+                        val (bg, fg) = when {
+                            line.startsWith("+") && !line.startsWith("+++") ->
+                                ext.diffAddBackground to ext.diffAddForeground
+                            line.startsWith("-") && !line.startsWith("---") ->
+                                ext.diffRemoveBackground to ext.diffRemoveForeground
+                            line.startsWith("@@") ->
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f) to
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                            else ->
+                                Color.Transparent to MaterialTheme.colorScheme.onSurface
+                        }
+                        Text(
+                            text = line.ifEmpty { " " },
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.5.sp,
+                                lineHeight = 17.sp,
+                            ),
+                            color = fg,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(bg)
+                                .padding(horizontal = 8.dp, vertical = 1.dp),
+                        )
                     }
-                    Text(
-                        text = line.ifEmpty { " " },
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.5.sp,
-                            lineHeight = 17.sp,
-                        ),
-                        color = fg,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(bg)
-                            .padding(horizontal = 8.dp, vertical = 1.dp),
-                    )
                 }
             }
 
             if (diff.status == DiffApprovalStatus.PENDING) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     OutlinedButton(
                         onClick = onReject,
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, AntigravityPalette.CriticalRed.copy(alpha = 0.7f)),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, ext.critical.copy(alpha = 0.6f)),
                     ) {
                         Icon(
-                            Icons.Default.Close,
+                            imageVector = Icons.Default.Close,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
-                            tint = AntigravityPalette.CriticalRed,
+                            tint = ext.critical,
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Reddet", color = AntigravityPalette.CriticalRed, fontWeight = FontWeight.Medium)
+                        Text("Reddet", color = ext.critical, fontWeight = FontWeight.Medium)
                     }
                     Button(
                         onClick = onApprove,
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = AntigravityPalette.SuccessGreen),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.tertiary,
+                            contentColor = MaterialTheme.colorScheme.onTertiary,
+                        ),
                     ) {
                         Icon(
-                            Icons.Default.Check,
+                            imageVector = Icons.Default.Check,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
-                            tint = Color(0xFF042214),
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Onayla", color = Color(0xFF042214), fontWeight = FontWeight.Bold)
+                        Text("Onayla", fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -1081,12 +1141,13 @@ fun DiffReviewCard(
 private fun ArtifactCard(
     artifact: WorkspaceArtifact,
 ) {
+    val ext = LocalAntigravityColors.current
     var expanded by remember { mutableStateOf(false) }
 
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
+        border = BorderStroke(1.dp, ext.cardBorder),
         modifier = Modifier
             .fillMaxWidth()
             .clickable { expanded = !expanded },
@@ -1097,16 +1158,19 @@ private fun ArtifactCard(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Surface(
-                    shape = RoundedCornerShape(9.dp),
-                    color = AntigravityPalette.HydrogenViolet.copy(alpha = 0.14f),
-                    border = BorderStroke(1.dp, AntigravityPalette.HydrogenViolet.copy(alpha = 0.35f)),
-                    modifier = Modifier.size(32.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    border = BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.secondary.copy(alpha = if (ext.isDark) 0.35f else 0.2f),
+                    ),
+                    modifier = Modifier.size(34.dp),
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            Icons.Default.Description,
+                            imageVector = Icons.Default.Description,
                             contentDescription = null,
-                            tint = AntigravityPalette.HydrogenViolet,
+                            tint = MaterialTheme.colorScheme.secondary,
                             modifier = Modifier.size(17.dp),
                         )
                     }
@@ -1138,15 +1202,15 @@ private fun ArtifactCard(
             AnimatedVisibility(visible = expanded && artifact.content.isNotBlank()) {
                 Surface(
                     shape = RoundedCornerShape(10.dp),
-                    color = AntigravityPalette.CodeBlockBg,
-                    border = BorderStroke(1.dp, AntigravityPalette.BorderHairline),
+                    color = ext.codeBlockBackground,
+                    border = BorderStroke(1.dp, ext.cardBorder),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
                         text = artifact.content,
-                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
-                        color = AntigravityPalette.TextPrimary,
-                        modifier = Modifier.padding(10.dp),
+                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 19.sp),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(11.dp),
                     )
                 }
             }
@@ -1154,10 +1218,14 @@ private fun ArtifactCard(
     }
 }
 
-private fun memberStatusColor(status: SwarmMemberStatus): Color = when (status) {
-    SwarmMemberStatus.WORKING -> AntigravityPalette.NeonCyan
-    SwarmMemberStatus.DONE -> AntigravityPalette.SuccessGreen
-    SwarmMemberStatus.WAITING -> AntigravityPalette.HydrogenViolet
-    SwarmMemberStatus.ERROR, SwarmMemberStatus.KILLED -> AntigravityPalette.CriticalRed
-    SwarmMemberStatus.STOPPED -> AntigravityPalette.WarningAmber
+private fun memberStatusColor(
+    status: SwarmMemberStatus,
+    ext: AntigravityExtendedColors,
+    secondaryColor: Color,
+): Color = when (status) {
+    SwarmMemberStatus.WORKING -> ext.accentCyan
+    SwarmMemberStatus.DONE -> ext.success
+    SwarmMemberStatus.WAITING -> secondaryColor
+    SwarmMemberStatus.ERROR, SwarmMemberStatus.KILLED -> ext.critical
+    SwarmMemberStatus.STOPPED -> ext.warning
 }

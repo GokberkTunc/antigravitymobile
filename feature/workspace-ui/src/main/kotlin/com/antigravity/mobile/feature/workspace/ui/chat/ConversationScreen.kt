@@ -8,6 +8,10 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,7 +21,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -39,7 +42,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.AttachFile
@@ -52,12 +57,13 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
@@ -66,11 +72,13 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.StopCircle
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -81,16 +89,16 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -102,7 +110,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -117,7 +124,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.antigravity.mobile.contracts.AccountPlanTier
 import com.antigravity.mobile.contracts.AcpEvent
 import com.antigravity.mobile.contracts.AcpModel
 import com.antigravity.mobile.contracts.AcpSessionState
@@ -127,15 +133,20 @@ import com.antigravity.mobile.contracts.PermissionMode
 import com.antigravity.mobile.contracts.ThinkingEffort
 import com.antigravity.mobile.contracts.ToolCallStatus
 import com.antigravity.mobile.contracts.ToolCallSummary
+import com.antigravity.mobile.contracts.UsageQuota
 import com.antigravity.mobile.contracts.VoiceState
 import com.antigravity.mobile.contracts.WorkspaceChatMessage
 import com.antigravity.mobile.feature.workspace.model.AuthBannerState
 import com.antigravity.mobile.feature.workspace.model.InterfaceLayoutMode
 import com.antigravity.mobile.feature.workspace.model.OverviewTab
+import com.antigravity.mobile.feature.workspace.model.QuotaBucketParser
 import com.antigravity.mobile.feature.workspace.model.QuotaWarningState
+import com.antigravity.mobile.feature.workspace.model.SlashCommand
 import com.antigravity.mobile.feature.workspace.model.WorkspaceAction
 import com.antigravity.mobile.feature.workspace.model.WorkspaceUiState
-import com.antigravity.mobile.feature.workspace.theme.AntigravityPalette
+import com.antigravity.mobile.feature.workspace.model.defaultMentions
+import com.antigravity.mobile.feature.workspace.theme.AntigravityExtendedColors
+import com.antigravity.mobile.feature.workspace.theme.LocalAntigravityColors
 import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
@@ -152,15 +163,9 @@ fun ConversationScreen(
     onOpenDrawer: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val snackbarHostState = remember { SnackbarHostState() }
+    val ext = LocalAntigravityColors.current
     val listState = rememberLazyListState()
     var showAttachmentDialog by remember { mutableStateOf(false) }
-
-    LaunchedEffect(state.errorMessage) {
-        val message = state.errorMessage ?: return@LaunchedEffect
-        snackbarHostState.showSnackbar(message)
-        onAction(WorkspaceAction.DismissError)
-    }
 
     val lastMessage = state.messages.lastOrNull()
     LaunchedEffect(
@@ -178,14 +183,18 @@ fun ConversationScreen(
         state.diffs.count { it.status == DiffApprovalStatus.PENDING }
     val isStreaming = state.sessionState == AcpSessionState.STREAMING ||
         state.messages.any { it.isStreaming }
-    val activeTitle = state.activeConversation?.title?.takeIf { it.isNotBlank() }
-        ?: state.activeProject.name
+    val activeTitle = state.activeConversation?.title?.takeIf { it.isNotBlank() } ?: "Yeni Sohbet"
+    val activeSubtitle = state.selectedProject?.name ?: "Cihaz Geneli"
     val isCompact = state.settings.layoutMode == InterfaceLayoutMode.COMPACT_MOBILE
+
+    val activeQuota = state.activeProfile?.quota
+    val fiveHourPercent = remember(activeQuota, state.selectedModel) {
+        activeQuota?.let { QuotaBucketParser.primaryHeadlinePercent(it, state.selectedModel) }
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 TopAppBar(
@@ -196,15 +205,21 @@ fun ConversationScreen(
                         actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     ),
                     navigationIcon = {
-                        IconButton(onClick = onOpenDrawer) {
+                        IconButton(onClick = { onAction(WorkspaceAction.NavigateBack) }) {
                             Icon(
-                                imageVector = Icons.Default.Menu,
-                                contentDescription = "Menü",
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Geri",
                             )
                         }
                     },
                     title = {
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Column(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable(onClick = onOpenDrawer)
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
                             Text(
                                 text = activeTitle,
                                 style = MaterialTheme.typography.titleSmall,
@@ -219,8 +234,8 @@ fun ConversationScreen(
                             ) {
                                 SessionStatusDot(state.sessionState)
                                 Text(
-                                    text = "${state.activeProject.name} • ${state.selectedModel.displayName}",
-                                    style = MaterialTheme.typography.labelSmall,
+                                    text = activeSubtitle,
+                                    style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -230,27 +245,14 @@ fun ConversationScreen(
                     },
                     actions = {
                         TopBarQuotaPill(
-                            remainingPercent = state.activeProfile?.quota?.remainingPercent,
+                            fiveHourPercent = fiveHourPercent,
                             isRefreshing = state.isRefreshingQuota,
                             onClick = { onAction(WorkspaceAction.OpenQuotaSheet) },
                         )
-                        Spacer(modifier = Modifier.width(2.dp))
-                        IconButton(
-                            onClick = {
-                                onAction(WorkspaceAction.CreateConversation(state.activeProject.id))
-                            },
-                            modifier = Modifier.size(36.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = "Yeni Sohbet",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
+                        Spacer(modifier = Modifier.width(4.dp))
                         IconButton(
                             onClick = { onAction(WorkspaceAction.OpenOverviewSheet(OverviewTab.SUBAGENTS)) },
-                            modifier = Modifier.size(36.dp),
+                            modifier = Modifier.size(38.dp),
                         ) {
                             BadgedBox(
                                 badge = {
@@ -269,7 +271,7 @@ fun ConversationScreen(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Hub,
-                                    contentDescription = "Alt ajanlar, Swarm ve Diffs",
+                                    contentDescription = "Yardımcı panel",
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(20.dp),
                                 )
@@ -281,12 +283,12 @@ fun ConversationScreen(
                                 onClick = { onAction(WorkspaceAction.TriggerEmergencyStop) },
                             )
                         }
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                     },
                 )
                 HorizontalDivider(
                     thickness = 1.dp,
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                    color = ext.cardBorder.copy(alpha = 0.75f),
                 )
             }
         },
@@ -294,7 +296,6 @@ fun ConversationScreen(
             WorkspaceComposer(
                 state = state,
                 onAction = onAction,
-                onOpenAttachmentDialog = { showAttachmentDialog = true },
             )
         },
     ) { innerPadding ->
@@ -303,6 +304,20 @@ fun ConversationScreen(
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
+            // Sleek Dismissible Inline Error Card (replaces floating black Snackbar)
+            AnimatedVisibility(
+                visible = state.errorMessage != null,
+                enter = fadeIn(tween(180)) + expandVertically(tween(200)),
+                exit = fadeOut(tween(150)) + shrinkVertically(tween(180)),
+            ) {
+                state.errorMessage?.let { errorText ->
+                    InlineErrorCard(
+                        message = errorText,
+                        onDismiss = { onAction(WorkspaceAction.DismissError) },
+                    )
+                }
+            }
+
             // -32000 AuthRequired Banner
             state.authBanner?.let { banner ->
                 AuthRequiredBanner(
@@ -353,7 +368,7 @@ fun ConversationScreen(
                 )
             }
 
-            // Streaming Conversation Canvas or Empty Hero
+            // Editorial Empty Draft Canvas or Streaming Conversation Thread
             if (state.messages.isEmpty()) {
                 EmptyWorkspaceWelcome(
                     state = state,
@@ -369,10 +384,10 @@ fun ConversationScreen(
                         .weight(1f)
                         .fillMaxWidth(),
                     contentPadding = PaddingValues(
-                        horizontal = if (isCompact) 12.dp else 16.dp,
-                        vertical = if (isCompact) 10.dp else 14.dp,
+                        horizontal = if (isCompact) 14.dp else 18.dp,
+                        vertical = if (isCompact) 12.dp else 16.dp,
                     ),
-                    verticalArrangement = Arrangement.spacedBy(if (isCompact) 12.dp else 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (isCompact) 14.dp else 20.dp),
                 ) {
                     items(state.messages, key = { it.id }) { message ->
                         ChatMessageItem(
@@ -386,6 +401,24 @@ fun ConversationScreen(
         }
     }
 
+    if (state.showComposerToolsSheet) {
+        ComposerToolsBottomSheet(
+            state = state,
+            onAction = onAction,
+            onOpenAttachmentDialog = {
+                onAction(WorkspaceAction.CloseComposerToolsSheet)
+                showAttachmentDialog = true
+            },
+        )
+    }
+
+    if (state.showModelPickerSheet) {
+        ModelAndEffortPickerBottomSheet(
+            state = state,
+            onAction = onAction,
+        )
+    }
+
     if (showAttachmentDialog) {
         QuickAttachmentDialog(
             onDismiss = { showAttachmentDialog = false },
@@ -397,37 +430,46 @@ fun ConversationScreen(
     }
 }
 
-private fun quotaStatusColor(remainingPercent: Double?): Color = when {
-    remainingPercent == null -> AntigravityPalette.NeonCyan
-    remainingPercent > 40.0 -> AntigravityPalette.SuccessGreen
-    remainingPercent > 15.0 -> AntigravityPalette.WarningAmber
-    else -> AntigravityPalette.CriticalRed
+private fun quotaStatusColor(
+    remainingPercent: Double?,
+    ext: AntigravityExtendedColors,
+    neutralColor: Color,
+): Color = when {
+    remainingPercent == null -> neutralColor
+    remainingPercent > 40.0 -> ext.success
+    remainingPercent > 15.0 -> ext.warning
+    else -> ext.critical
 }
 
 @Composable
 private fun TopBarQuotaPill(
-    remainingPercent: Double?,
+    fiveHourPercent: Double?,
     isRefreshing: Boolean,
     onClick: () -> Unit,
 ) {
-    val accentColor = quotaStatusColor(remainingPercent)
-    val label = remainingPercent?.let { "%${it.roundToInt().coerceIn(0, 100)}" } ?: "Kota"
+    val ext = LocalAntigravityColors.current
+    val accentColor = quotaStatusColor(
+        remainingPercent = fiveHourPercent,
+        ext = ext,
+        neutralColor = MaterialTheme.colorScheme.primary,
+    )
+    val label = fiveHourPercent?.let { "5s %${it.roundToInt().coerceIn(0, 100)}" } ?: "Kota"
 
     Surface(
         onClick = onClick,
         shape = CircleShape,
         color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.42f)),
+        border = BorderStroke(1.dp, accentColor.copy(alpha = if (ext.isDark) 0.42f else 0.32f)),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (isRefreshing) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(10.dp),
-                    strokeWidth = 1.5.dp,
+                    strokeWidth = 1.6.dp,
                     color = accentColor,
                 )
             } else {
@@ -455,10 +497,11 @@ private fun TopBarQuotaPill(
 private fun EmergencyStopButton(
     onClick: () -> Unit,
 ) {
+    val ext = LocalAntigravityColors.current
     val transition = rememberInfiniteTransition(label = "emergency-stop-glow")
     val glowAlpha by transition.animateFloat(
-        initialValue = 0.18f,
-        targetValue = 0.42f,
+        initialValue = if (ext.isDark) 0.16f else 0.10f,
+        targetValue = if (ext.isDark) 0.34f else 0.22f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 700, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse,
@@ -469,15 +512,15 @@ private fun EmergencyStopButton(
     Surface(
         onClick = onClick,
         shape = CircleShape,
-        color = AntigravityPalette.CriticalRed.copy(alpha = glowAlpha),
-        border = BorderStroke(1.dp, AntigravityPalette.CriticalRed.copy(alpha = 0.75f)),
+        color = ext.critical.copy(alpha = glowAlpha),
+        border = BorderStroke(1.dp, ext.critical.copy(alpha = 0.65f)),
         modifier = Modifier.size(34.dp),
     ) {
         Box(contentAlignment = Alignment.Center) {
             Icon(
                 imageVector = Icons.Default.StopCircle,
                 contentDescription = "Acil Durdur",
-                tint = AntigravityPalette.CriticalRed,
+                tint = ext.critical,
                 modifier = Modifier.size(20.dp),
             )
         }
@@ -486,19 +529,20 @@ private fun EmergencyStopButton(
 
 @Composable
 private fun SessionStatusDot(state: AcpSessionState) {
+    val ext = LocalAntigravityColors.current
     val color = when (state) {
-        AcpSessionState.READY -> AntigravityPalette.SuccessGreen
+        AcpSessionState.READY -> ext.success
         AcpSessionState.STREAMING,
         AcpSessionState.CONNECTING,
         AcpSessionState.INITIALIZING,
-        -> AntigravityPalette.NeonCyan
+        -> ext.accentCyan
 
         AcpSessionState.AWAITING_PERMISSION,
         AcpSessionState.AWAITING_AUTH,
-        -> AntigravityPalette.WarningAmber
+        -> ext.warning
 
-        AcpSessionState.ERROR -> AntigravityPalette.CriticalRed
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
+        AcpSessionState.ERROR -> ext.critical
+        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
     }
 
     val isAnimated = state == AcpSessionState.STREAMING ||
@@ -531,6 +575,51 @@ private fun SessionStatusDot(state: AcpSessionState) {
 }
 
 @Composable
+private fun InlineErrorCard(
+    message: String,
+    onDismiss: () -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f)),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Default.ErrorOutline,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.size(30.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Hatayı kapat",
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun AuthRequiredBanner(
     banner: AuthBannerState,
     activeProfileId: String,
@@ -542,14 +631,14 @@ private fun AuthRequiredBanner(
     var showCodeField by remember { mutableStateOf(false) }
 
     Surface(
-        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f),
-        border = BorderStroke(1.dp, AntigravityPalette.CriticalRed.copy(alpha = 0.55f)),
+        color = MaterialTheme.colorScheme.errorContainer,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 14.dp, vertical = 6.dp),
         shape = RoundedCornerShape(16.dp),
     ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -558,11 +647,12 @@ private fun AuthRequiredBanner(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f),
                 ) {
                     Icon(
-                        Icons.Default.Warning,
+                        imageVector = Icons.Default.Warning,
                         contentDescription = null,
-                        tint = AntigravityPalette.WarningAmber,
+                        tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(18.dp),
                     )
                     Text(
@@ -572,9 +662,9 @@ private fun AuthRequiredBanner(
                         color = MaterialTheme.colorScheme.onErrorContainer,
                     )
                 }
-                IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
+                IconButton(onClick = onDismiss, modifier = Modifier.size(26.dp)) {
                     Icon(
-                        Icons.Default.Close,
+                        imageVector = Icons.Default.Close,
                         contentDescription = "Kapat",
                         tint = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.size(16.dp),
@@ -589,7 +679,7 @@ private fun AuthRequiredBanner(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = { onLaunchOAuth(activeProfileId, banner.authUrl) },
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -599,8 +689,8 @@ private fun AuthRequiredBanner(
                 }
                 OutlinedButton(
                     onClick = { showCodeField = !showCodeField },
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.4f)),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.35f)),
                 ) {
                     Text("Manuel Kod", color = MaterialTheme.colorScheme.onErrorContainer)
                 }
@@ -609,7 +699,7 @@ private fun AuthRequiredBanner(
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     OutlinedTextField(
                         value = manualCode,
@@ -625,7 +715,7 @@ private fun AuthRequiredBanner(
                             manualCode = ""
                         },
                         enabled = manualCode.isNotBlank(),
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(12.dp),
                     ) {
                         Text("Gönder")
                     }
@@ -641,24 +731,34 @@ private fun QuotaNearLimitBanner(
     onSwitchFallback: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val ext = LocalAntigravityColors.current
+
     Surface(
-        color = Color(0xFF231C0F),
-        border = BorderStroke(1.dp, AntigravityPalette.WarningAmber.copy(alpha = 0.65f)),
-        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, ext.warning.copy(alpha = 0.5f)),
+        shape = RoundedCornerShape(16.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
+            .padding(horizontal = 14.dp, vertical = 6.dp),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier
+                .background(ext.warning.copy(alpha = if (ext.isDark) 0.12f else 0.08f))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = null,
+                tint = ext.warning,
+                modifier = Modifier.size(18.dp),
+            )
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
                     text = "Kota Limite Yaklaşıyor (%.0f%% kaldı)".format(warning.remainingPercent),
                     style = MaterialTheme.typography.labelLarge,
-                    color = AntigravityPalette.WarningAmber,
+                    color = ext.warning,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
@@ -666,19 +766,19 @@ private fun QuotaNearLimitBanner(
                         "Tek dokunuşla yedek hesaba geçin: ${it.displayName}"
                     } ?: "Yeni Google profili ekleyerek kesintisiz devam edebilirsiniz.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = AntigravityPalette.TextSecondary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             warning.suggestedFallbackProfile?.let { fallback ->
                 TextButton(onClick = { onSwitchFallback(fallback.id) }) {
-                    Text("Geç", fontWeight = FontWeight.Bold, color = AntigravityPalette.WarningAmber)
+                    Text("Geç", fontWeight = FontWeight.SemiBold, color = ext.warning)
                 }
             }
-            IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
+            IconButton(onClick = onDismiss, modifier = Modifier.size(26.dp)) {
                 Icon(
-                    Icons.Default.Close,
+                    imageVector = Icons.Default.Close,
                     contentDescription = "Kapat",
-                    tint = AntigravityPalette.TextSecondary,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(16.dp),
                 )
             }
@@ -692,30 +792,33 @@ private fun InlinePermissionCard(
     onApprove: (remember: Boolean) -> Unit,
     onDeny: () -> Unit,
 ) {
+    val ext = LocalAntigravityColors.current
+
     Surface(
-        color = AntigravityPalette.SurfaceElevated,
-        border = BorderStroke(1.dp, AntigravityPalette.WarningAmber.copy(alpha = 0.7f)),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, ext.warning.copy(alpha = 0.55f)),
         shape = RoundedCornerShape(16.dp),
+        shadowElevation = if (ext.isDark) 0.dp else 1.dp,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 14.dp, vertical = 6.dp),
     ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Surface(
                     shape = CircleShape,
-                    color = AntigravityPalette.WarningAmber.copy(alpha = 0.16f),
-                    modifier = Modifier.size(28.dp),
+                    color = ext.warning.copy(alpha = 0.14f),
+                    modifier = Modifier.size(32.dp),
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            Icons.Default.Shield,
+                            imageVector = Icons.Default.Shield,
                             contentDescription = null,
-                            tint = AntigravityPalette.WarningAmber,
-                            modifier = Modifier.size(16.dp),
+                            tint = ext.warning,
+                            modifier = Modifier.size(17.dp),
                         )
                     }
                 }
@@ -724,117 +827,113 @@ private fun InlinePermissionCard(
                         text = "Araç İzni • ${request.toolName}",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
-                        color = AntigravityPalette.TextPrimary,
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
                         text = "Risk: ${request.riskLevel.name}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = AntigravityPalette.WarningAmber,
+                        color = ext.warning,
                     )
                 }
             }
             Text(
                 text = request.description,
                 style = MaterialTheme.typography.bodySmall,
-                color = AntigravityPalette.TextSecondary,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (request.argumentsJson.isNotBlank() && request.argumentsJson != "{}") {
                 Surface(
                     shape = RoundedCornerShape(10.dp),
-                    color = AntigravityPalette.CodeBlockBg,
-                    border = BorderStroke(1.dp, AntigravityPalette.BorderHairline),
+                    color = ext.codeBlockBackground,
+                    border = BorderStroke(1.dp, ext.cardBorder),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
                         text = request.argumentsJson,
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
-                        color = AntigravityPalette.TextSecondary,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(8.dp),
+                        modifier = Modifier.padding(10.dp),
                     )
                 }
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedButton(
                     onClick = onDeny,
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, AntigravityPalette.CriticalRed.copy(alpha = 0.7f)),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, ext.critical.copy(alpha = 0.6f)),
                 ) {
-                    Text("Reddet", color = AntigravityPalette.CriticalRed, fontWeight = FontWeight.Medium)
+                    Text("Reddet", color = ext.critical, fontWeight = FontWeight.Medium)
                 }
                 Button(
                     onClick = { onApprove(false) },
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = AntigravityPalette.SuccessGreen),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiary,
+                        contentColor = MaterialTheme.colorScheme.onTertiary,
+                    ),
                 ) {
-                    Text("İzin Ver", color = Color(0xFF042214), fontWeight = FontWeight.Bold)
+                    Text("İzin Ver", fontWeight = FontWeight.SemiBold)
                 }
             }
         }
     }
 }
 
-private data class QuickSuggestionItem(
-    val title: String,
-    val subtitle: String,
+private data class QuickPromptChipItem(
+    val label: String,
     val icon: ImageVector,
-    val accentColor: Color,
     val onClick: () -> Unit,
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun EmptyWorkspaceWelcome(
     state: WorkspaceUiState,
     onAction: (WorkspaceAction) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val suggestions = remember(onAction) {
+    val ext = LocalAntigravityColors.current
+    val quota = state.activeProfile?.quota
+    val fiveHourPercent = remember(quota, state.selectedModel) {
+        quota?.let { QuotaBucketParser.primaryHeadlinePercent(it, state.selectedModel) }
+    }
+    val weeklyPercent = remember(quota, state.selectedModel) {
+        quota?.let { QuotaBucketParser.weeklyPercent(it, state.selectedModel) }
+    }
+    val contextSummary = "${state.selectedProject?.name ?: "Cihaz Geneli"} • ${state.selectedModel.displayName}"
+
+    val quickPrompts = remember(onAction) {
         listOf(
-            QuickSuggestionItem(
-                title = "Cihaz & Sistem Özeti",
-                subtitle = "Pil, depolama, aktif servisler ve sistem durumunu analiz et",
+            QuickPromptChipItem(
+                label = "Cihaz durumunu analiz et",
                 icon = Icons.Default.Memory,
-                accentColor = AntigravityPalette.NeonCyan,
                 onClick = {
-                    onAction(
-                        WorkspaceAction.SendMessage(
-                            "Pil, depolama, aktif servisler ve sistem durumunu analiz et",
-                        ),
-                    )
+                    onAction(WorkspaceAction.SendMessage("Cihaz durumunu analiz et"))
                 },
             ),
-            QuickSuggestionItem(
-                title = "Proje Dosyalarını Tara",
-                subtitle = "Aktif proje dizinindeki dosyaları listele ve özetle",
+            QuickPromptChipItem(
+                label = "Proje dosyalarını tara",
                 icon = Icons.Default.FolderOpen,
-                accentColor = AntigravityPalette.CarbonTeal,
                 onClick = {
-                    onAction(
-                        WorkspaceAction.SendMessage(
-                            "Aktif proje dizinindeki dosyaları listele ve özetle",
-                        ),
-                    )
+                    onAction(WorkspaceAction.SendMessage("Proje dosyalarını tara"))
                 },
             ),
-            QuickSuggestionItem(
-                title = "Otomasyon Oluştur",
-                subtitle = "/schedule ile zamanlı veya periyodik görev tanımla",
+            QuickPromptChipItem(
+                label = "/schedule Otomasyon kur",
                 icon = Icons.Default.Schedule,
-                accentColor = AntigravityPalette.HydrogenViolet,
                 onClick = { onAction(WorkspaceAction.UpdateComposerText("/schedule ")) },
             ),
-            QuickSuggestionItem(
-                title = "Swarm Görevi Başlat",
-                subtitle = "/swarm ile çoklu ajan görev dağılımı başlat",
+            QuickPromptChipItem(
+                label = "/swarm Çoklu ajan başlat",
                 icon = Icons.Default.Hub,
-                accentColor = AntigravityPalette.SuccessGreen,
                 onClick = { onAction(WorkspaceAction.UpdateComposerText("/swarm ")) },
             ),
         )
@@ -843,143 +942,120 @@ private fun EmptyWorkspaceWelcome(
     Column(
         modifier = modifier
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 24.dp),
+            .padding(horizontal = 24.dp, vertical = 28.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Glowing cyan/indigo subtle gradient orb badge
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier.size(84.dp),
+        // Subtle Official Antigravity Sparkle Mark
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            border = BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.primary.copy(alpha = if (ext.isDark) 0.35f else 0.2f),
+            ),
+            modifier = Modifier.size(54.dp),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(84.dp)
-                    .clip(CircleShape)
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(
-                                AntigravityPalette.NeonCyan.copy(alpha = 0.28f),
-                                AntigravityPalette.HydrogenViolet.copy(alpha = 0.14f),
-                                Color.Transparent,
-                            ),
-                        ),
-                    ),
-            )
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                border = BorderStroke(
-                    width = 1.dp,
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            AntigravityPalette.NeonCyan.copy(alpha = 0.7f),
-                            AntigravityPalette.HydrogenViolet.copy(alpha = 0.65f),
-                        ),
-                    ),
-                ),
-                modifier = Modifier.size(56.dp),
-            ) {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier.background(
-                        Brush.linearGradient(
-                            colors = listOf(
-                                AntigravityPalette.NeonCyan.copy(alpha = 0.18f),
-                                AntigravityPalette.HydrogenViolet.copy(alpha = 0.16f),
-                            ),
-                        ),
-                    ),
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AutoAwesome,
-                        contentDescription = null,
-                        tint = AntigravityPalette.NeonCyan,
-                        modifier = Modifier.size(28.dp),
-                    )
-                }
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(26.dp),
+                )
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(18.dp))
 
         Text(
-            text = "Antigravity Mobile",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
+            text = "Neye odaklanalım?",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onBackground,
             textAlign = TextAlign.Center,
         )
 
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        Text(
-            text = state.activeProject.rootPath,
-            style = MaterialTheme.typography.labelSmall,
-            fontFamily = FontFamily.Monospace,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Active Model & Effort Pill
+        // Tappable Context & Model Pill -> Opens Model Picker Sheet
         Surface(
+            onClick = { onAction(WorkspaceAction.OpenModelPickerSheet) },
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceContainer,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, ext.cardBorder),
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                modifier = Modifier.padding(start = 12.dp, end = 9.dp, top = 7.dp, bottom = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Icon(
                     imageVector = Icons.Default.Psychology,
                     contentDescription = null,
-                    tint = AntigravityPalette.HydrogenViolet,
-                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(15.dp),
                 )
                 Text(
-                    text = "${state.selectedModel.displayName} • ${state.selectedEffort.name}",
+                    text = contextSummary,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(15.dp),
                 )
             }
         }
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Compact Visual Quota Status Strip
-        HeroQuotaStatusStrip(
-            profileName = state.activeProfile?.displayName ?: "Google Hesabı",
-            planTier = state.activeProfile?.quota?.planTier ?: AccountPlanTier.UNKNOWN,
-            remainingPercent = state.activeProfile?.quota?.remainingPercent,
+        // Refined Dual-Bucket Mini Quota Strip (5-Hour & Weekly)
+        DualBucketMiniQuotaStrip(
+            fiveHourPercent = fiveHourPercent,
+            weeklyPercent = weeklyPercent,
             isRefreshing = state.isRefreshingQuota,
             onClick = { onAction(WorkspaceAction.OpenQuotaSheet) },
         )
 
-        Spacer(modifier = Modifier.height(22.dp))
+        Spacer(modifier = Modifier.height(26.dp))
 
-        // 2x2 Quick-Action Suggestion Cards
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+        // Minimalist Quick-Prompt Chips
+        FlowRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 420.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            suggestions.chunked(2).forEach { rowItems ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(IntrinsicSize.Max),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+            quickPrompts.forEach { chip ->
+                Surface(
+                    onClick = chip.onClick,
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, ext.cardBorder),
                 ) {
-                    rowItems.forEach { item ->
-                        QuickSuggestionCard(
-                            item = item,
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight(),
+                    Row(
+                        modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    ) {
+                        Icon(
+                            imageVector = chip.icon,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Text(
+                            text = chip.label,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
@@ -989,146 +1065,115 @@ private fun EmptyWorkspaceWelcome(
 }
 
 @Composable
-private fun HeroQuotaStatusStrip(
-    profileName: String,
-    planTier: AccountPlanTier,
-    remainingPercent: Double?,
+private fun DualBucketMiniQuotaStrip(
+    fiveHourPercent: Double?,
+    weeklyPercent: Double?,
     isRefreshing: Boolean,
     onClick: () -> Unit,
 ) {
-    val accentColor = quotaStatusColor(remainingPercent)
-    val fraction = ((remainingPercent ?: 100.0) / 100.0).toFloat().coerceIn(0f, 1f)
-    val percentText = remainingPercent?.let { "%${it.roundToInt().coerceIn(0, 100)} kalan" } ?: "Kotayı Görüntüle"
-    val tierSuffix = if (planTier != AccountPlanTier.UNKNOWN) " • ${planTier.name}" else ""
+    val ext = LocalAntigravityColors.current
+    val fiveHourColor = quotaStatusColor(fiveHourPercent, ext, MaterialTheme.colorScheme.primary)
+    val weeklyColor = quotaStatusColor(weeklyPercent, ext, MaterialTheme.colorScheme.secondary)
 
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.35f)),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, ext.cardBorder),
         modifier = Modifier
             .fillMaxWidth()
-            .widthIn(max = 380.dp),
+            .widthIn(max = 360.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(7.dp),
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    modifier = Modifier.weight(1f),
-                ) {
-                    if (isRefreshing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(11.dp),
-                            strokeWidth = 1.6.dp,
-                            color = accentColor,
-                        )
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(accentColor),
-                        )
-                    }
-                    Text(
-                        text = "$profileName$tierSuffix",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Text(
-                        text = percentText,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = accentColor,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Icon(
-                        imageVector = Icons.Default.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp),
-                    )
-                }
+            if (isRefreshing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 1.8.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
+            QuotaMiniBucketColumn(
+                label = "5 Saatlik",
+                percent = fiveHourPercent,
+                accentColor = fiveHourColor,
+                modifier = Modifier.weight(1f),
+            )
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(4.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
-            ) {
+                    .width(1.dp)
+                    .height(26.dp)
+                    .background(ext.cardBorder),
+            )
+            QuotaMiniBucketColumn(
+                label = "Haftalık",
+                percent = weeklyPercent,
+                accentColor = weeklyColor,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = "Kota detayları",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuotaMiniBucketColumn(
+    label: String,
+    percent: Double?,
+    accentColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val ext = LocalAntigravityColors.current
+    val fraction = ((percent ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
+    val valueText = percent?.let { "%${it.roundToInt().coerceIn(0, 100)}" } ?: "—"
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+            Text(
+                text = valueText,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = if (percent != null) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(3.5.dp)
+                .clip(CircleShape)
+                .background(ext.cardBorder),
+        ) {
+            if (percent != null) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(if (remainingPercent != null) fraction else 0.18f)
+                        .fillMaxWidth(fraction.coerceAtLeast(0.04f))
                         .fillMaxHeight()
                         .clip(CircleShape)
                         .background(accentColor),
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun QuickSuggestionCard(
-    item: QuickSuggestionItem,
-    modifier: Modifier = Modifier,
-) {
-    Surface(
-        onClick = item.onClick,
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
-        modifier = modifier,
-    ) {
-        Column(
-            modifier = Modifier.padding(13.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = item.accentColor.copy(alpha = 0.14f),
-                border = BorderStroke(1.dp, item.accentColor.copy(alpha = 0.35f)),
-                modifier = Modifier.size(32.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = item.icon,
-                        contentDescription = null,
-                        tint = item.accentColor,
-                        modifier = Modifier.size(17.dp),
-                    )
-                }
-            }
-            Text(
-                text = item.title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = item.subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
     }
 }
@@ -1140,6 +1185,7 @@ private fun ChatMessageItem(
     showCodeLineNumbers: Boolean,
     showThoughtBlocksExpanded: Boolean,
 ) {
+    val ext = LocalAntigravityColors.current
     val formattedTime = remember(message.timestampEpochMs) {
         formatMessageTimestamp(message.timestampEpochMs)
     }
@@ -1151,13 +1197,16 @@ private fun ChatMessageItem(
                 horizontalArrangement = Arrangement.End,
             ) {
                 Surface(
-                    shape = RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.38f)),
-                    modifier = Modifier.widthIn(max = 320.dp),
+                    shape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    border = BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.primary.copy(alpha = if (ext.isDark) 0.26f else 0.14f),
+                    ),
+                    modifier = Modifier.widthIn(max = 316.dp),
                 ) {
                     Column(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         if (message.attachments.isNotEmpty()) {
@@ -1168,19 +1217,19 @@ private fun ChatMessageItem(
                                 message.attachments.forEach { att ->
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
+                                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
                                         border = BorderStroke(
                                             1.dp,
-                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.24f),
                                         ),
                                     ) {
                                         Row(
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                                         ) {
                                             Icon(
-                                                Icons.Default.AttachFile,
+                                                imageVector = Icons.Default.AttachFile,
                                                 contentDescription = null,
                                                 tint = MaterialTheme.colorScheme.primary,
                                                 modifier = Modifier.size(12.dp),
@@ -1188,7 +1237,7 @@ private fun ChatMessageItem(
                                             Text(
                                                 text = att,
                                                 style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                color = MaterialTheme.colorScheme.onSurface,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                             )
@@ -1218,11 +1267,11 @@ private fun ChatMessageItem(
         ChatMessageRole.SYSTEM -> {
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.7f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, ext.cardBorder),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+                Box(modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp)) {
                     MarkdownContent(
                         text = message.content,
                         showCodeLineNumbers = showCodeLineNumbers,
@@ -1232,7 +1281,7 @@ private fun ChatMessageItem(
         }
 
         ChatMessageRole.ASSISTANT, ChatMessageRole.TOOL -> {
-            // Full-width editorial assistant layout
+            // Full-width clean editorial prose (Antigravity Desktop 2.0 style)
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -1247,35 +1296,16 @@ private fun ChatMessageItem(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainer,
-                            border = BorderStroke(
-                                1.dp,
-                                Brush.linearGradient(
-                                    colors = listOf(
-                                        AntigravityPalette.NeonCyan.copy(alpha = 0.65f),
-                                        AntigravityPalette.HydrogenViolet.copy(alpha = 0.6f),
-                                    ),
-                                ),
-                            ),
-                            modifier = Modifier.size(24.dp),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier.size(22.dp),
                         ) {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier.background(
-                                    Brush.linearGradient(
-                                        colors = listOf(
-                                            AntigravityPalette.NeonCyan.copy(alpha = 0.16f),
-                                            AntigravityPalette.HydrogenViolet.copy(alpha = 0.14f),
-                                        ),
-                                    ),
-                                ),
-                            ) {
+                            Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.AutoAwesome,
                                     contentDescription = null,
-                                    tint = AntigravityPalette.NeonCyan,
-                                    modifier = Modifier.size(13.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(12.dp),
                                 )
                             }
                         }
@@ -1288,13 +1318,13 @@ private fun ChatMessageItem(
                         if (message.isStreaming) {
                             Surface(
                                 shape = CircleShape,
-                                color = AntigravityPalette.NeonCyan.copy(alpha = 0.14f),
+                                color = MaterialTheme.colorScheme.primaryContainer,
                             ) {
                                 Text(
                                     text = "Yazıyor",
                                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                    color = AntigravityPalette.NeonCyan,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
                                 )
                             }
                         }
@@ -1303,12 +1333,12 @@ private fun ChatMessageItem(
                         Text(
                             text = formattedTime,
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                            color = ext.textMuted,
                         )
                     }
                 }
 
-                // Thought block accordion (respects settings.showThoughtBlocksExpanded)
+                // Collapsible Thought Block Accordion
                 if (!message.thinkingContent.isNullOrBlank()) {
                     ThoughtBlockAccordion(
                         thinkingText = message.thinkingContent.orEmpty(),
@@ -1317,7 +1347,7 @@ private fun ChatMessageItem(
                     )
                 }
 
-                // Collapsible Tool Execution Pills
+                // Minimal Timeline-Style Tool Execution Pills
                 if (message.toolCalls.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         message.toolCalls.forEach { call ->
@@ -1329,7 +1359,7 @@ private fun ChatMessageItem(
                     }
                 }
 
-                // Editorial Markdown / Code block body
+                // Editorial Markdown / Code Body
                 if (message.content.isNotBlank()) {
                     MarkdownContent(
                         text = message.content,
@@ -1344,7 +1374,7 @@ private fun ChatMessageItem(
                         CircularProgressIndicator(
                             modifier = Modifier.size(14.dp),
                             strokeWidth = 2.dp,
-                            color = AntigravityPalette.NeonCyan,
+                            color = MaterialTheme.colorScheme.primary,
                         )
                         Text(
                             text = "Yanıt akışı bekleniyor...",
@@ -1374,13 +1404,17 @@ fun ThoughtBlockAccordion(
     modifier: Modifier = Modifier,
     defaultExpanded: Boolean = false,
 ) {
+    val ext = LocalAntigravityColors.current
     var expanded by remember(defaultExpanded) { mutableStateOf(defaultExpanded) }
 
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = if (ext.isDark) 0.28f else 0.48f),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.secondary.copy(alpha = if (ext.isDark) 0.32f else 0.22f),
+        ),
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
             Row(
@@ -1392,7 +1426,7 @@ fun ThoughtBlockAccordion(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     if (isStreaming) {
                         CircularProgressIndicator(
@@ -1411,7 +1445,7 @@ fun ThoughtBlockAccordion(
                     Text(
                         text = if (isStreaming) "Düşünüyor..." else "Düşünce Süreci",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.secondary,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
@@ -1425,12 +1459,12 @@ fun ThoughtBlockAccordion(
             AnimatedVisibility(visible = expanded) {
                 Column(modifier = Modifier.padding(top = 8.dp)) {
                     HorizontalDivider(
-                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.22f),
+                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
                     Text(
                         text = thinkingText,
-                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 19.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -1445,13 +1479,14 @@ fun ToolExecutionPill(
     modifier: Modifier = Modifier,
     showCodeLineNumbers: Boolean = false,
 ) {
+    val ext = LocalAntigravityColors.current
     var expanded by remember { mutableStateOf(false) }
 
     val statusColor = when (call.status) {
-        ToolCallStatus.COMPLETED -> AntigravityPalette.SuccessGreen
-        ToolCallStatus.FAILED, ToolCallStatus.CANCELLED -> AntigravityPalette.CriticalRed
-        ToolCallStatus.AWAITING_APPROVAL -> AntigravityPalette.WarningAmber
-        ToolCallStatus.RUNNING, ToolCallStatus.PENDING -> AntigravityPalette.NeonCyan
+        ToolCallStatus.COMPLETED -> ext.success
+        ToolCallStatus.FAILED, ToolCallStatus.CANCELLED -> ext.critical
+        ToolCallStatus.AWAITING_APPROVAL -> ext.warning
+        ToolCallStatus.RUNNING, ToolCallStatus.PENDING -> ext.accentCyan
     }
 
     val inlinePreview = remember(call.argumentsPreview, call.outputPreview) {
@@ -1461,145 +1496,160 @@ fun ToolExecutionPill(
         if (raw == "{}") "" else raw
     }
 
-    Surface(
+    Row(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.85f),
-        border = BorderStroke(1.dp, statusColor.copy(alpha = 0.42f)),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Column(modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp)) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { expanded = !expanded },
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
+        // Minimal timeline accent indicator
+        Box(
+            modifier = Modifier
+                .padding(top = 12.dp)
+                .width(3.dp)
+                .height(if (expanded) 44.dp else 18.dp)
+                .clip(CircleShape)
+                .background(statusColor.copy(alpha = 0.7f)),
+        )
+
+        Surface(
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, ext.cardBorder),
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp)) {
                 Row(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { expanded = !expanded },
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    when (call.status) {
-                        ToolCallStatus.RUNNING, ToolCallStatus.PENDING -> {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp,
-                                color = statusColor,
-                            )
-                        }
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    ) {
+                        when (call.status) {
+                            ToolCallStatus.RUNNING, ToolCallStatus.PENDING -> {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = statusColor,
+                                )
+                            }
 
-                        ToolCallStatus.COMPLETED -> {
-                            Icon(
-                                Icons.Default.CheckCircle,
-                                contentDescription = null,
-                                tint = statusColor,
-                                modifier = Modifier.size(15.dp),
-                            )
-                        }
+                            ToolCallStatus.COMPLETED -> {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = statusColor,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                            }
 
-                        ToolCallStatus.FAILED, ToolCallStatus.CANCELLED -> {
-                            Icon(
-                                Icons.Default.Error,
-                                contentDescription = null,
-                                tint = statusColor,
-                                modifier = Modifier.size(15.dp),
-                            )
-                        }
+                            ToolCallStatus.FAILED, ToolCallStatus.CANCELLED -> {
+                                Icon(
+                                    imageVector = Icons.Default.Error,
+                                    contentDescription = null,
+                                    tint = statusColor,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                            }
 
-                        ToolCallStatus.AWAITING_APPROVAL -> {
-                            Icon(
-                                Icons.Default.Shield,
-                                contentDescription = null,
-                                tint = statusColor,
-                                modifier = Modifier.size(15.dp),
-                            )
+                            ToolCallStatus.AWAITING_APPROVAL -> {
+                                Icon(
+                                    imageVector = Icons.Default.Shield,
+                                    contentDescription = null,
+                                    tint = statusColor,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                            }
                         }
-                    }
-                    Icon(
-                        Icons.Default.Build,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(13.dp),
-                    )
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = call.toolName,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                        Icon(
+                            imageVector = Icons.Default.Build,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(13.dp),
                         )
-                        if (!expanded && inlinePreview.isNotBlank()) {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = inlinePreview,
-                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                                text = call.toolName,
+                                style = MaterialTheme.typography.labelMedium,
                                 fontFamily = FontFamily.Monospace,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                            if (!expanded && inlinePreview.isNotBlank()) {
+                                Text(
+                                    text = inlinePreview,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                     }
-                }
 
-                Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = statusColor.copy(alpha = 0.14f),
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        Text(
-                            text = call.status.name,
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                            color = statusColor,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = statusColor.copy(alpha = if (ext.isDark) 0.16f else 0.12f),
+                        ) {
+                            Text(
+                                text = call.status.name,
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = statusColor,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                        Icon(
+                            imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = "Detay",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Icon(
-                        imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = "Detay",
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
-            }
 
-            AnimatedVisibility(visible = expanded) {
-                Column(
-                    modifier = Modifier.padding(top = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    if (call.argumentsPreview.isNotBlank()) {
-                        Text(
-                            text = "Argümanlar",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        CodeBlockCard(
-                            language = "json",
-                            code = call.argumentsPreview,
-                            showLineNumbers = showCodeLineNumbers,
-                        )
-                    }
-                    if (!call.outputPreview.isNullOrBlank()) {
-                        Text(
-                            text = "Çıktı",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        CodeBlockCard(
-                            language = "output",
-                            code = call.outputPreview.orEmpty(),
-                            showLineNumbers = showCodeLineNumbers,
-                        )
+                AnimatedVisibility(visible = expanded) {
+                    Column(
+                        modifier = Modifier.padding(top = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        if (call.argumentsPreview.isNotBlank()) {
+                            Text(
+                                text = "Argümanlar",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            CodeBlockCard(
+                                language = "json",
+                                code = call.argumentsPreview,
+                                showLineNumbers = showCodeLineNumbers,
+                            )
+                        }
+                        if (!call.outputPreview.isNullOrBlank()) {
+                            Text(
+                                text = "Çıktı",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            CodeBlockCard(
+                                language = "output",
+                                code = call.outputPreview.orEmpty(),
+                                showLineNumbers = showCodeLineNumbers,
+                            )
+                        }
                     }
                 }
             }
@@ -1619,19 +1669,23 @@ fun MarkdownContent(
     modifier: Modifier = Modifier,
     showCodeLineNumbers: Boolean = false,
 ) {
+    val ext = LocalAntigravityColors.current
+    val inlineCodeBg = ext.codeBlockBackground
+    val inlineCodeFg = MaterialTheme.colorScheme.primary
     val blocks = remember(text) { parseMarkdownBlocks(text) }
+
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         blocks.forEach { block ->
             when (block) {
                 is MarkdownBlock.Heading -> {
                     Text(
-                        text = renderInlineMarkdown(block.text),
+                        text = renderInlineMarkdown(block.text, inlineCodeBg, inlineCodeFg),
                         style = when (block.level) {
                             1 -> MaterialTheme.typography.titleLarge
                             2 -> MaterialTheme.typography.titleMedium
                             else -> MaterialTheme.typography.titleSmall
                         },
-                        fontWeight = FontWeight.Bold,
+                        fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                 }
@@ -1646,8 +1700,8 @@ fun MarkdownContent(
 
                 is MarkdownBlock.Paragraph -> {
                     Text(
-                        text = renderInlineMarkdown(block.text),
-                        style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+                        text = renderInlineMarkdown(block.text, inlineCodeBg, inlineCodeFg),
+                        style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 23.sp),
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                 }
@@ -1656,12 +1710,14 @@ fun MarkdownContent(
     }
 }
 
+@Suppress("DEPRECATION")
 @Composable
 private fun CodeBlockCard(
     language: String,
     code: String,
     showLineNumbers: Boolean = false,
 ) {
+    val ext = LocalAntigravityColors.current
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
 
@@ -1679,43 +1735,37 @@ private fun CodeBlockCard(
 
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = AntigravityPalette.CodeBlockBg,
-        border = BorderStroke(1.dp, AntigravityPalette.BorderHairline),
+        color = ext.codeBlockBackground,
+        border = BorderStroke(1.dp, ext.cardBorder),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column {
-            // Sleek header bar with language pill + copy button
+            // Crisp Header Bar with Language + Copy Button
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(AntigravityPalette.SurfaceDark)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (ext.isDark) 0.55f else 0.72f))
                     .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = AntigravityPalette.SurfaceElevated,
-                    border = BorderStroke(1.dp, AntigravityPalette.BorderHairline),
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        Icon(
-                            Icons.Default.Code,
-                            contentDescription = null,
-                            tint = AntigravityPalette.NeonCyan,
-                            modifier = Modifier.size(12.dp),
-                        )
-                        Text(
-                            text = language.ifBlank { "code" },
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
-                            color = AntigravityPalette.TextSecondary,
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Code,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(13.dp),
+                    )
+                    Text(
+                        text = language.ifBlank { "code" },
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
+
                 Surface(
                     onClick = {
                         clipboard.setText(AnnotatedString(code))
@@ -1723,40 +1773,32 @@ private fun CodeBlockCard(
                     },
                     shape = RoundedCornerShape(6.dp),
                     color = if (copied) {
-                        AntigravityPalette.SuccessGreen.copy(alpha = 0.16f)
+                        ext.success.copy(alpha = if (ext.isDark) 0.18f else 0.12f)
                     } else {
                         Color.Transparent
                     },
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         Icon(
                             imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
                             contentDescription = "Kopyala",
-                            tint = if (copied) {
-                                AntigravityPalette.SuccessGreen
-                            } else {
-                                AntigravityPalette.TextSecondary
-                            },
+                            tint = if (copied) ext.success else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(13.dp),
                         )
                         Text(
                             text = if (copied) "Kopyalandı" else "Kopyala",
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
-                            color = if (copied) {
-                                AntigravityPalette.SuccessGreen
-                            } else {
-                                AntigravityPalette.TextSecondary
-                            },
+                            color = if (copied) ext.success else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
             }
 
-            HorizontalDivider(color = AntigravityPalette.BorderHairline.copy(alpha = 0.8f))
+            HorizontalDivider(color = ext.cardBorder)
 
             if (showLineNumbers) {
                 Row(
@@ -1766,8 +1808,7 @@ private fun CodeBlockCard(
                         .padding(vertical = 10.dp),
                 ) {
                     Column(
-                        modifier = Modifier
-                            .padding(start = 10.dp, end = 8.dp),
+                        modifier = Modifier.padding(start = 10.dp, end = 8.dp),
                         horizontalAlignment = Alignment.End,
                     ) {
                         codeLines.forEachIndexed { index, _ ->
@@ -1778,7 +1819,7 @@ private fun CodeBlockCard(
                                     fontSize = 11.5.sp,
                                     lineHeight = 18.sp,
                                 ),
-                                color = AntigravityPalette.TextMuted,
+                                color = ext.textMuted,
                             )
                         }
                     }
@@ -1786,7 +1827,7 @@ private fun CodeBlockCard(
                         modifier = Modifier
                             .width(1.dp)
                             .height((codeLines.size.coerceAtLeast(1) * 18).dp)
-                            .background(AntigravityPalette.BorderHairline.copy(alpha = 0.7f)),
+                            .background(ext.cardBorder),
                     )
                     Column(
                         modifier = Modifier.padding(start = 10.dp, end = 12.dp),
@@ -1799,7 +1840,7 @@ private fun CodeBlockCard(
                                     fontSize = 12.sp,
                                     lineHeight = 18.sp,
                                 ),
-                                color = Color(0xFFD6E2F5),
+                                color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
                     }
@@ -1812,7 +1853,7 @@ private fun CodeBlockCard(
                         fontSize = 12.sp,
                         lineHeight = 18.sp,
                     ),
-                    color = Color(0xFFD6E2F5),
+                    color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier
                         .horizontalScroll(rememberScrollState())
                         .padding(12.dp),
@@ -1870,14 +1911,18 @@ private fun parseMarkdownBlocks(raw: String): List<MarkdownBlock> {
     return result
 }
 
-private fun renderInlineMarkdown(text: String): AnnotatedString = buildAnnotatedString {
+private fun renderInlineMarkdown(
+    text: String,
+    inlineCodeBg: Color,
+    inlineCodeFg: Color,
+): AnnotatedString = buildAnnotatedString {
     var index = 0
     while (index < text.length) {
         when {
             text.startsWith("**", index) -> {
                 val end = text.indexOf("**", index + 2)
                 if (end > index + 2) {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) {
                         append(text.substring(index + 2, end))
                     }
                     index = end + 2
@@ -1893,8 +1938,8 @@ private fun renderInlineMarkdown(text: String): AnnotatedString = buildAnnotated
                     withStyle(
                         SpanStyle(
                             fontFamily = FontFamily.Monospace,
-                            background = Color(0xFF1A2538),
-                            color = AntigravityPalette.NeonCyan,
+                            background = inlineCodeBg,
+                            color = inlineCodeFg,
                         ),
                     ) {
                         append(" ${text.substring(index + 1, end)} ")
@@ -1914,15 +1959,25 @@ private fun renderInlineMarkdown(text: String): AnnotatedString = buildAnnotated
     }
 }
 
+private fun permissionModeLabel(mode: PermissionMode): String = when (mode) {
+    PermissionMode.AUTO -> "Auto"
+    PermissionMode.ASK -> "Ask"
+    PermissionMode.PLAN -> "Plan"
+}
+
+private fun permissionModeSubtitle(mode: PermissionMode): String = when (mode) {
+    PermissionMode.AUTO -> "Araç çağrılarını otomatik onayla"
+    PermissionMode.ASK -> "Kritik işlemlerde onay iste"
+    PermissionMode.PLAN -> "Salt okunur analiz ve planlama"
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WorkspaceComposer(
     state: WorkspaceUiState,
     onAction: (WorkspaceAction) -> Unit,
-    onOpenAttachmentDialog: () -> Unit,
 ) {
-    var showModelMenu by remember { mutableStateOf(false) }
-    var showEffortMenu by remember { mutableStateOf(false) }
+    val ext = LocalAntigravityColors.current
     var showModeMenu by remember { mutableStateOf(false) }
     var isInputFocused by remember { mutableStateOf(false) }
 
@@ -1931,20 +1986,20 @@ private fun WorkspaceComposer(
     val hasSendableContent = state.composerText.isNotBlank() || state.attachments.isNotEmpty()
 
     val capsuleBorderColor by animateColorAsState(
-        targetValue = if (isInputFocused || hasSendableContent) {
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
+        targetValue = if (isInputFocused) {
+            MaterialTheme.colorScheme.outline.copy(alpha = if (ext.isDark) 0.9f else 0.75f)
         } else {
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
+            ext.cardBorder
         },
-        animationSpec = tween(durationMillis = 180),
+        animationSpec = tween(durationMillis = 160),
         label = "composer-border-color",
     )
 
     val micPulseAlpha = if (isListening) {
         val transition = rememberInfiniteTransition(label = "voice-mic-pulse")
         val animated by transition.animateFloat(
-            initialValue = 0.2f,
-            targetValue = 0.45f,
+            initialValue = 0.16f,
+            targetValue = 0.36f,
             animationSpec = infiniteRepeatable(
                 animation = tween(durationMillis = 650, easing = FastOutSlowInEasing),
                 repeatMode = RepeatMode.Reverse,
@@ -1963,13 +2018,13 @@ private fun WorkspaceComposer(
             .imePadding()
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
-        // Slash command picker popup
+        // Inline Slash Command Autocomplete Popup (when typing `/`)
         AnimatedVisibility(visible = state.showSlashMenu && state.slashSuggestions.isNotEmpty()) {
             Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
-                shadowElevation = 4.dp,
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, ext.cardBorder),
+                shadowElevation = if (ext.isDark) 6.dp else 3.dp,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 8.dp),
@@ -1979,9 +2034,9 @@ private fun WorkspaceComposer(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(12.dp))
                                 .clickable { onAction(WorkspaceAction.SelectSlashCommand(cmd)) }
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                .padding(horizontal = 10.dp, vertical = 9.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
@@ -2008,13 +2063,13 @@ private fun WorkspaceComposer(
             }
         }
 
-        // @ Mention picker popup
+        // Inline @ Mention Autocomplete Popup (when typing `@`)
         AnimatedVisibility(visible = state.showMentionMenu && state.mentionSuggestions.isNotEmpty()) {
             Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
-                shadowElevation = 4.dp,
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, ext.cardBorder),
+                shadowElevation = if (ext.isDark) 6.dp else 3.dp,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 8.dp),
@@ -2024,9 +2079,9 @@ private fun WorkspaceComposer(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(12.dp))
                                 .clickable { onAction(WorkspaceAction.SelectMention(suggestion)) }
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                .padding(horizontal = 10.dp, vertical = 9.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
@@ -2053,15 +2108,16 @@ private fun WorkspaceComposer(
 
         // Live Voice Dictation Banner
         AnimatedVisibility(visible = state.voiceState !is VoiceState.Idle) {
+            val isVoiceError = state.voiceState is VoiceState.Error
             Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer,
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(
                     1.dp,
-                    if (state.voiceState is VoiceState.Error) {
-                        AntigravityPalette.CriticalRed.copy(alpha = 0.55f)
+                    if (isVoiceError) {
+                        ext.critical.copy(alpha = 0.55f)
                     } else {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
                     },
                 ),
                 modifier = Modifier
@@ -2069,7 +2125,7 @@ private fun WorkspaceComposer(
                     .padding(bottom = 8.dp),
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
@@ -2083,22 +2139,20 @@ private fun WorkspaceComposer(
                     Text(
                         text = voiceText,
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (state.voiceState is VoiceState.Error) {
-                            AntigravityPalette.CriticalRed
-                        } else {
-                            MaterialTheme.colorScheme.primary
-                        },
+                        color = if (isVoiceError) ext.critical else MaterialTheme.colorScheme.primary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
                     Surface(
                         onClick = {
                             val next = if (state.voiceLocaleTag == "tr-TR") "en-US" else "tr-TR"
                             onAction(WorkspaceAction.ChangeVoiceLocale(next))
                         },
                         shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        border = BorderStroke(1.dp, ext.cardBorder),
                     ) {
                         Text(
                             text = if (state.voiceLocaleTag == "tr-TR") "TR" else "EN",
@@ -2112,18 +2166,18 @@ private fun WorkspaceComposer(
             }
         }
 
-        // Modern Floating Capsule Container
+        // Elevated Soft Tonal Two-Tier Capsule (Material 3 Expressive)
         Surface(
-            shape = RoundedCornerShape(22.dp),
-            color = MaterialTheme.colorScheme.surfaceContainer,
-            tonalElevation = 2.dp,
-            shadowElevation = 6.dp,
+            shape = RoundedCornerShape(26.dp),
+            color = if (ext.isDark) ext.cardBackground else MaterialTheme.colorScheme.surface,
+            tonalElevation = if (ext.isDark) 2.dp else 1.dp,
+            shadowElevation = if (ext.isDark) 4.dp else 2.dp,
             border = BorderStroke(1.dp, capsuleBorderColor),
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(
-                modifier = Modifier.padding(start = 14.dp, end = 10.dp, top = 10.dp, bottom = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(start = 16.dp, end = 10.dp, top = 12.dp, bottom = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 // Attachments chips row (when non-empty)
                 if (state.attachments.isNotEmpty()) {
@@ -2135,17 +2189,17 @@ private fun WorkspaceComposer(
                         state.attachments.forEach { att ->
                             Surface(
                                 onClick = { onAction(WorkspaceAction.RemoveAttachment(att)) },
-                                shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)),
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.surfaceContainer,
+                                border = BorderStroke(1.dp, ext.cardBorder),
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(5.dp),
                                 ) {
                                     Icon(
-                                        Icons.Default.AttachFile,
+                                        imageVector = Icons.Default.AttachFile,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(13.dp),
@@ -2158,7 +2212,7 @@ private fun WorkspaceComposer(
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                     Icon(
-                                        Icons.Default.Close,
+                                        imageVector = Icons.Default.Close,
                                         contentDescription = "Kaldır",
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(13.dp),
@@ -2169,190 +2223,53 @@ private fun WorkspaceComposer(
                     }
                 }
 
-                // Clean borderless Text Input Field
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 2.dp),
-                ) {
-                    if (state.composerText.isEmpty()) {
-                        Text(
-                            text = "Antigravity'ye bir görev ver...",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                        )
-                    }
-                    BasicTextField(
-                        value = state.composerText,
-                        onValueChange = { onAction(WorkspaceAction.UpdateComposerText(it)) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .onFocusChanged { isInputFocused = it.isFocused },
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(
-                            color = MaterialTheme.colorScheme.onSurface,
-                        ),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        maxLines = 5,
-                    )
-                }
-
-                // Bottom Toolbar Row: +, @, /, Scrollable Model/Effort/Mode Pills, Voice Mic, Send/Stop
+                // Tier 1: Borderless Multi-Line Input + Circular Send / Stop Button
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    ComposerIconPill(
-                        onClick = onOpenAttachmentDialog,
-                    ) {
-                        Icon(
-                            Icons.Default.Add,
-                            contentDescription = "Ek ekle",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(17.dp),
-                        )
-                    }
-                    ComposerIconPill(
-                        onClick = { onAction(WorkspaceAction.OpenMentionMenu) },
-                    ) {
-                        Icon(
-                            Icons.Default.AlternateEmail,
-                            contentDescription = "@ bağlam ekle",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                    ComposerIconPill(
-                        onClick = { onAction(WorkspaceAction.OpenSlashMenu) },
-                    ) {
-                        Text(
-                            text = "/",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-
-                    // Scrollable selector pills for Model / Effort / Permission Mode
-                    Row(
+                    Box(
                         modifier = Modifier
                             .weight(1f)
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            .padding(vertical = 6.dp),
+                        contentAlignment = Alignment.CenterStart,
                     ) {
-                        Box {
-                            ComposerSelectorPill(
-                                label = state.selectedModel.displayName,
-                                onClick = { showModelMenu = true },
+                        if (state.composerText.isEmpty()) {
+                            Text(
+                                text = "Antigravity'ye sor veya görev ver...",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
-                            DropdownMenu(
-                                expanded = showModelMenu,
-                                onDismissRequest = { showModelMenu = false },
-                            ) {
-                                AcpModel.entries.forEach { model ->
-                                    DropdownMenuItem(
-                                        text = { Text(model.displayName) },
-                                        onClick = {
-                                            onAction(WorkspaceAction.SelectModel(model))
-                                            showModelMenu = false
-                                        },
-                                    )
-                                }
-                            }
                         }
-
-                        Box {
-                            ComposerSelectorPill(
-                                label = state.selectedEffort.name,
-                                onClick = { showEffortMenu = true },
-                            )
-                            DropdownMenu(
-                                expanded = showEffortMenu,
-                                onDismissRequest = { showEffortMenu = false },
-                            ) {
-                                ThinkingEffort.entries.forEach { effort ->
-                                    DropdownMenuItem(
-                                        text = { Text(effort.name) },
-                                        onClick = {
-                                            onAction(WorkspaceAction.SelectEffort(effort))
-                                            showEffortMenu = false
-                                        },
-                                    )
-                                }
-                            }
-                        }
-
-                        Box {
-                            ComposerSelectorPill(
-                                label = state.permissionMode.name,
-                                onClick = { showModeMenu = true },
-                            )
-                            DropdownMenu(
-                                expanded = showModeMenu,
-                                onDismissRequest = { showModeMenu = false },
-                            ) {
-                                PermissionMode.entries.forEach { mode ->
-                                    DropdownMenuItem(
-                                        text = { Text(mode.name) },
-                                        onClick = {
-                                            onAction(WorkspaceAction.SelectPermissionMode(mode))
-                                            showModeMenu = false
-                                        },
-                                    )
-                                }
-                            }
-                        }
+                        BasicTextField(
+                            value = state.composerText,
+                            onValueChange = { onAction(WorkspaceAction.UpdateComposerText(it)) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onFocusChanged { isInputFocused = it.isFocused },
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            maxLines = 5,
+                        )
                     }
 
-                    // Voice Mic Pill (pulsing red when listening)
-                    Surface(
-                        onClick = { onAction(WorkspaceAction.ToggleVoiceListening) },
-                        shape = CircleShape,
-                        color = if (isListening) {
-                            AntigravityPalette.CriticalRed.copy(alpha = micPulseAlpha)
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-                        },
-                        border = BorderStroke(
-                            1.dp,
-                            if (isListening) {
-                                AntigravityPalette.CriticalRed.copy(alpha = 0.85f)
-                            } else {
-                                MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
-                            },
-                        ),
-                        modifier = Modifier.size(34.dp),
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = if (isListening) Icons.Default.MicOff else Icons.Default.Mic,
-                                contentDescription = "Bas-Konuş sesli dikte",
-                                tint = if (isListening) {
-                                    AntigravityPalette.CriticalRed
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                modifier = Modifier.size(17.dp),
-                            )
-                        }
-                    }
-
-                    // Crisp Circular Send / Stop Button
                     if (isStreaming && state.composerText.isBlank()) {
                         Surface(
                             onClick = { onAction(WorkspaceAction.CancelActiveSession) },
                             shape = CircleShape,
-                            color = AntigravityPalette.CriticalRed,
-                            modifier = Modifier.size(34.dp),
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(38.dp),
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.Stop,
                                     contentDescription = "İptal et",
-                                    tint = Color.White,
+                                    tint = MaterialTheme.colorScheme.onError,
                                     modifier = Modifier.size(18.dp),
                                 )
                             }
@@ -2365,9 +2282,9 @@ private fun WorkspaceComposer(
                             color = if (hasSendableContent) {
                                 MaterialTheme.colorScheme.primary
                             } else {
-                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+                                MaterialTheme.colorScheme.surfaceContainerHigh
                             },
-                            modifier = Modifier.size(34.dp),
+                            modifier = Modifier.size(38.dp),
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
@@ -2376,9 +2293,412 @@ private fun WorkspaceComposer(
                                     tint = if (hasSendableContent) {
                                         MaterialTheme.colorScheme.onPrimary
                                     } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                                     },
+                                    modifier = Modifier.size(17.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Tier 2: Clean, Spacious 4-Control Utility Bar
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    // 1. `+` Composer Tools Sheet trigger
+                    Surface(
+                        onClick = { onAction(WorkspaceAction.OpenComposerToolsSheet) },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        border = BorderStroke(1.dp, ext.cardBorder),
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "Araçlar, ekler ve komutlar",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+
+                    // 2. Combined Model & Effort Pill -> Opens Model Picker Bottom Sheet
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        Surface(
+                            onClick = { onAction(WorkspaceAction.OpenModelPickerSheet) },
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            border = BorderStroke(1.dp, ext.cardBorder),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(start = 10.dp, end = 7.dp, top = 6.dp, bottom = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(13.dp),
+                                )
+                                Text(
+                                    text = "${state.selectedModel.displayName} · ${state.selectedEffort.name}",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.5.sp),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                            }
+                        }
+                    }
+
+                    // 3. Permission Mode Pill (Auto / Ask / Plan)
+                    Box {
+                        Surface(
+                            onClick = { showModeMenu = true },
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            border = BorderStroke(1.dp, ext.cardBorder),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(start = 10.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Text(
+                                    text = permissionModeLabel(state.permissionMode),
+                                    style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.5.sp),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "İzin modu",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = showModeMenu,
+                            onDismissRequest = { showModeMenu = false },
+                            containerColor = MaterialTheme.colorScheme.surface,
+                        ) {
+                            PermissionMode.entries.forEach { mode ->
+                                val isSelected = mode == state.permissionMode
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(
+                                                text = permissionModeLabel(mode),
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                                color = if (isSelected) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurface
+                                                },
+                                            )
+                                            Text(
+                                                text = permissionModeSubtitle(mode),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    },
+                                    trailingIcon = if (isSelected) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                    onClick = {
+                                        onAction(WorkspaceAction.SelectPermissionMode(mode))
+                                        showModeMenu = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+
+                    // 4. Voice Mic Button (red highlight when listening)
+                    Surface(
+                        onClick = { onAction(WorkspaceAction.ToggleVoiceListening) },
+                        shape = CircleShape,
+                        color = if (isListening) {
+                            ext.critical.copy(alpha = micPulseAlpha)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainer
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            if (isListening) ext.critical.copy(alpha = 0.75f) else ext.cardBorder,
+                        ),
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (isListening) Icons.Default.MicOff else Icons.Default.Mic,
+                                contentDescription = "Sesli dikte",
+                                tint = if (isListening) {
+                                    ext.critical
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.size(17.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun ComposerToolsBottomSheet(
+    state: WorkspaceUiState,
+    onAction: (WorkspaceAction) -> Unit,
+    onOpenAttachmentDialog: () -> Unit,
+) {
+    val ext = LocalAntigravityColors.current
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val mentions = state.mentionSuggestions.ifEmpty { defaultMentions() }
+
+    ModalBottomSheet(
+        onDismissRequest = { onAction(WorkspaceAction.CloseComposerToolsSheet) },
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        dragHandle = {
+            BottomSheetDefaults.DragHandle(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f))
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "Araçlar & Bağlam",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "Dosya ekle, slash komutu çalıştır veya @ bağlamı ekle",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            // Section 1: Attachments
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Ekler",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ComposerToolChip(
+                        icon = Icons.Default.AttachFile,
+                        label = "+ Dosya/Yol Ekle",
+                        accent = MaterialTheme.colorScheme.primary,
+                        onClick = onOpenAttachmentDialog,
+                    )
+                    ComposerToolChip(
+                        icon = Icons.Default.Image,
+                        label = "Ekran Görüntüsü",
+                        accent = MaterialTheme.colorScheme.secondary,
+                        onClick = {
+                            onAction(WorkspaceAction.AddAttachment("screencap://current"))
+                            onAction(WorkspaceAction.CloseComposerToolsSheet)
+                        },
+                    )
+                    ComposerToolChip(
+                        icon = Icons.Default.AccountTree,
+                        label = "UI Ağacı",
+                        accent = ext.success,
+                        onClick = {
+                            onAction(WorkspaceAction.AddAttachment("uitree://foreground"))
+                            onAction(WorkspaceAction.CloseComposerToolsSheet)
+                        },
+                    )
+                }
+            }
+
+            HorizontalDivider(color = ext.cardBorder)
+
+            // Section 2: Slash Commands
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Terminal,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        text = "Slash Komutları",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    border = BorderStroke(1.dp, ext.cardBorder),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                        SlashCommand.entries.forEachIndexed { index, cmd ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onAction(WorkspaceAction.CloseComposerToolsSheet)
+                                        onAction(WorkspaceAction.SelectSlashCommand(cmd))
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                ) {
+                                    Text(
+                                        text = cmd.command,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = cmd.title,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        text = cmd.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                Icon(
+                                    imageVector = Icons.Default.ChevronRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(16.dp),
+                                )
+                            }
+                            if (index < SlashCommand.entries.lastIndex) {
+                                HorizontalDivider(
+                                    color = ext.cardBorder.copy(alpha = 0.7f),
+                                    modifier = Modifier.padding(horizontal = 12.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalDivider(color = ext.cardBorder)
+
+            // Section 3: @ Context Mentions
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AlternateEmail,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        text = "@ Bağlam Etiketleri",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    mentions.forEach { mention ->
+                        Surface(
+                            onClick = {
+                                onAction(WorkspaceAction.CloseComposerToolsSheet)
+                                onAction(WorkspaceAction.SelectMention(mention))
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            border = BorderStroke(1.dp, ext.cardBorder),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                                verticalArrangement = Arrangement.spacedBy(1.dp),
+                            ) {
+                                Text(
+                                    text = mention.token,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                                Text(
+                                    text = mention.label,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = FontFamily.Default,
+                                        fontSize = 10.5.sp,
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                         }
@@ -2390,53 +2710,347 @@ private fun WorkspaceComposer(
 }
 
 @Composable
-private fun ComposerIconPill(
+private fun ComposerToolChip(
+    icon: ImageVector,
+    label: String,
+    accent: Color,
     onClick: () -> Unit,
-    content: @Composable () -> Unit,
 ) {
+    val ext = LocalAntigravityColors.current
     Surface(
         onClick = onClick,
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
-        modifier = Modifier.size(30.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(1.dp, ext.cardBorder),
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            content()
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelAndEffortPickerBottomSheet(
+    state: WorkspaceUiState,
+    onAction: (WorkspaceAction) -> Unit,
+) {
+    val ext = LocalAntigravityColors.current
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val activeQuota = state.activeProfile?.quota
+
+    ModalBottomSheet(
+        onDismissRequest = { onAction(WorkspaceAction.CloseModelPickerSheet) },
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        dragHandle = {
+            BottomSheetDefaults.DragHandle(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f))
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Model & Düşünme Düzeyi",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "Aktif oturum için model ve akıl yürütme derinliği seçin",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(
+                    onClick = {
+                        onAction(WorkspaceAction.CloseModelPickerSheet)
+                        onAction(WorkspaceAction.OpenQuotaSheet)
+                    },
+                ) {
+                    Text("Kota Detayı", fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            // Models List with Live 5-Hour & Weekly Quota Badges
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Modeller",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                AcpModel.entries.forEach { model ->
+                    ModelPickerRow(
+                        model = model,
+                        selected = model == state.selectedModel,
+                        quota = activeQuota,
+                        onClick = { onAction(WorkspaceAction.SelectModel(model)) },
+                    )
+                }
+            }
+
+            HorizontalDivider(color = ext.cardBorder)
+
+            // Thinking Effort Segmented Pills
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = "Düşünme Düzeyi",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = effortHintLabel(state.selectedEffort),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    border = BorderStroke(1.dp, ext.cardBorder),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        ThinkingEffort.entries.forEach { effort ->
+                            val isSelected = effort == state.selectedEffort
+                            Surface(
+                                onClick = { onAction(WorkspaceAction.SelectEffort(effort)) },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    Color.Transparent
+                                },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Box(
+                                    modifier = Modifier.padding(vertical = 9.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = effort.name,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.onPrimary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Button(
+                onClick = { onAction(WorkspaceAction.CloseModelPickerSheet) },
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Tamam", fontWeight = FontWeight.SemiBold)
+            }
         }
     }
 }
 
 @Composable
-private fun ComposerSelectorPill(
-    label: String,
+private fun ModelPickerRow(
+    model: AcpModel,
+    selected: Boolean,
+    quota: UsageQuota?,
     onClick: () -> Unit,
 ) {
+    val ext = LocalAntigravityColors.current
+    val fiveHourPercent = remember(quota, model) {
+        quota?.let { QuotaBucketParser.primaryHeadlinePercent(it, model) }
+    }
+    val weeklyPercent = remember(quota, model) {
+        quota?.let { QuotaBucketParser.weeklyPercent(it, model) }
+    }
+
+    val containerColor = if (selected) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = if (ext.isDark) 0.55f else 0.7f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainer
+    }
+    val borderColor = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        ext.cardBorder
+    }
+
     Surface(
         onClick = onClick,
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+        shape = RoundedCornerShape(14.dp),
+        color = containerColor,
+        border = BorderStroke(if (selected) 1.4.dp else 1.dp, borderColor),
+        modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
-            modifier = Modifier.padding(start = 8.dp, end = 5.dp, top = 4.dp, bottom = 4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 13.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-            )
-            Icon(
-                imageVector = Icons.Default.KeyboardArrowDown,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(13.dp),
-            )
+            Surface(
+                shape = CircleShape,
+                color = if (selected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.surface
+                },
+                border = if (selected) null else BorderStroke(1.dp, ext.cardBorder),
+                modifier = Modifier.size(22.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    if (selected) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = "Seçili",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                }
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = model.displayName,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = modelDescription(model),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            // Live 5-Hour & Weekly Quota % Badges
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                if (fiveHourPercent != null) {
+                    ModelQuotaMiniBadge(
+                        prefix = "5s",
+                        percent = fiveHourPercent,
+                    )
+                }
+                if (weeklyPercent != null) {
+                    ModelQuotaMiniBadge(
+                        prefix = "Hft",
+                        percent = weeklyPercent,
+                    )
+                }
+                if (fiveHourPercent == null && weeklyPercent == null) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, ext.cardBorder),
+                    ) {
+                        Text(
+                            text = "—",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                        )
+                    }
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun ModelQuotaMiniBadge(
+    prefix: String,
+    percent: Double,
+) {
+    val ext = LocalAntigravityColors.current
+    val accent = quotaStatusColor(percent, ext, MaterialTheme.colorScheme.primary)
+    val clamped = percent.roundToInt().coerceIn(0, 100)
+
+    Surface(
+        shape = CircleShape,
+        color = accent.copy(alpha = if (ext.isDark) 0.16f else 0.11f),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
+    ) {
+        Text(
+            text = "$prefix %$clamped",
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+            fontWeight = FontWeight.SemiBold,
+            color = accent,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+        )
+    }
+}
+
+private fun modelDescription(model: AcpModel): String = when (model) {
+    AcpModel.GEMINI_4_NEON -> "Hızlı, dengeli günlük mühendislik"
+    AcpModel.GEMINI_4_HYDROGEN -> "Derin akıl yürütme ve karmaşık mimari"
+    AcpModel.GEMINI_4_CARBON -> "Hafif, düşük gecikmeli hızlı yanıt"
+    AcpModel.ORCHESTRATOR -> "Çoklu ajan koordinasyonu ve planlama"
+}
+
+private fun effortHintLabel(effort: ThinkingEffort): String = when (effort) {
+    ThinkingEffort.LOW -> "En hızlı yanıt"
+    ThinkingEffort.MEDIUM -> "Dengeli derinlik"
+    ThinkingEffort.HIGH -> "Kapsamlı akıl yürütme"
+    ThinkingEffort.EXTRA -> "Maksimum analiz"
 }
 
 @Composable
@@ -2448,12 +3062,13 @@ private fun QuickAttachmentDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        containerColor = MaterialTheme.colorScheme.surface,
         title = {
             Text(
                 text = "Dosya / Bağlam Ekle",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
             )
         },
         text = {
@@ -2464,6 +3079,7 @@ private fun QuickAttachmentDialog(
                     label = { Text("Dosya veya klasör yolu") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AssistChip(
