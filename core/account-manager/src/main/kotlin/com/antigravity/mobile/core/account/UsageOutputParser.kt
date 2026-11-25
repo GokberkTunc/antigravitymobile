@@ -13,9 +13,33 @@ import java.time.OffsetDateTime
 import kotlin.math.roundToInt
 
 /**
- * Parses `/usage` CLI output (plain text, table, or JSON) into a structured [UsageQuota].
+ * Classification of a quota window emitted by `agy --print /usage`.
+ */
+enum class QuotaWindowKind {
+    FIVE_HOUR,
+    WEEKLY,
+    OTHER,
+}
+
+/**
+ * Single parsed quota bucket row from multi-bucket `agy --print /usage` output.
+ */
+data class QuotaBucketEntry(
+    val modelGroup: String,
+    val windowLabel: String,
+    val windowKind: QuotaWindowKind,
+    val remainingPercent: Double,
+    val resetAtEpochMs: Long?,
+)
+
+/**
+ * Parses `/usage` CLI output (TSV multi-bucket rows, whitespace tables, plain text, or JSON)
+ * into a structured [UsageQuota] and optional per-model-group [QuotaBucketEntry] list.
  */
 object UsageOutputParser {
+    private const val MIN_VALID_RESET_EPOCH_MS = 86_400_000L
+    private const val MAX_RAW_SUMMARY_LENGTH = 2048
+
     private val ANSI_REGEX = Regex("\\u001B\\[[0-9;]*[A-Za-z]")
     private val SENSITIVE_TOKEN_REGEX = Regex("""(?i)(Bearer\s+[A-Za-z0-9._-]+|ya29\.[A-Za-z0-9._-]+)""")
 
@@ -43,15 +67,26 @@ object UsageOutputParser {
         """(?i)resets?\s+in\s+(?:(\d+)\s*d(?:ays?)?\s*)?(?:(\d+)\s*h(?:ours?|rs?)?\s*)?(?:(\d+)\s*m(?:in(?:utes?)?)?\s*)?(?:(\d+)\s*s(?:ec(?:onds?)?)?)?""",
     )
 
+    private val FIVE_HOUR_WINDOW_REGEX = Regex("""(?i)\b(?:five[\s-]*hour|5[\s-]*h(?:our|r)?s?)\b""")
+    private val WEEKLY_WINDOW_REGEX = Regex("""(?i)\b(?:weekly|week|7[\s-]*d(?:ay)?s?)\b""")
+    private val USED_WINDOW_LABEL_REGEX = Regex("""(?i)\b(?:used|consumed)\b""")
+    private val REMAINING_WINDOW_LABEL_REGEX = Regex("""(?i)\b(?:remaining|left|available)\b""")
+    private val BUCKET_PERCENT_REGEX = Regex("""^(\d+(?:\.\d+)?)\s*%$""")
+    private val MULTI_SPACE_REGEX = Regex("""\s{2,}""")
+    private val EMPTY_RESET_PLACEHOLDER_REGEX = Regex("""(?i)^(?:-|—|n/a|none|null)$""")
+    private val SINGLE_SPACE_BUCKET_REGEX = Regex(
+        """(?i)^(.+?)\s+((?:five[\s-]*hour|5[\s-]*h(?:our|r)?s?|weekly|7[\s-]*d(?:ay)?s?|daily|24[\s-]*h(?:our|r)?s?|monthly|hourly|session)\s+(?:limit|quota|window)(?:\s+(?:remaining|left|available|used|consumed))?|(?:five[\s-]*hour|5[\s-]*h(?:our|r)?s?|weekly)\s+(?:remaining|left|available|used|consumed))\s+(\d+(?:\.\d+)?)\s*%(?:\s+(\S+))?$""",
+    )
+
     private val lenientJson = Json { ignoreUnknownKeys = true }
 
     fun parse(
         rawOutput: String,
         nowEpochMs: Long = System.currentTimeMillis(),
     ): UsageQuota {
-        val stripped = ANSI_REGEX.replace(rawOutput, "").trim()
+        val stripped = normalizeRawOutput(rawOutput)
         val sanitizedSummary = SENSITIVE_TOKEN_REGEX.replace(stripped, "[REDACTED]")
-            .take(1024)
+            .take(MAX_RAW_SUMMARY_LENGTH)
 
         if (stripped.isEmpty()) {
             return UsageQuota(
@@ -67,6 +102,22 @@ object UsageOutputParser {
         }
 
         val tier = parseTier(stripped)
+
+        // Next check for multi-bucket TSV / table rows emitted by real `agy --print /usage`.
+        val buckets = parseBuckets(stripped)
+        if (buckets.isNotEmpty()) {
+            val primary = selectPrimaryBucket(buckets)
+            return UsageQuota(
+                planTier = tier,
+                remainingPercent = primary.remainingPercent,
+                usedRequests = null,
+                limitRequests = null,
+                resetAtEpochMs = primary.resetAtEpochMs,
+                rawSummary = sanitizedSummary,
+                updatedAtEpochMs = nowEpochMs,
+            )
+        }
+
         val (used, limit, ratioRemainingPct) = parseRatios(stripped)
         val explicitRemainingPct = parseExplicitRemainingPercent(stripped)
         val remainingPct = (explicitRemainingPct ?: ratioRemainingPct)?.coerceIn(0.0, 100.0)
@@ -74,7 +125,7 @@ object UsageOutputParser {
 
         return UsageQuota(
             planTier = tier,
-            remainingPercent = remainingPct?.let { (it * 10.0).roundToInt() / 10.0 },
+            remainingPercent = remainingPct?.let(::roundToTenth),
             usedRequests = used,
             limitRequests = limit,
             resetAtEpochMs = resetAt,
@@ -82,6 +133,147 @@ object UsageOutputParser {
             updatedAtEpochMs = nowEpochMs,
         )
     }
+
+    /**
+     * Parses multi-bucket quota rows from `agy --print /usage` output.
+     *
+     * Supports tab-separated rows (`<Group>\t<Window>\t<N>%\t<ISO>`) as well as multi-space
+     * aligned or single-space-separated variants. Sentinel timestamps `<= 86_400_000L` (such as
+     * `1970-01-01T00:00:00Z`) are normalized to `resetAtEpochMs = null`.
+     */
+    fun parseBuckets(rawOutput: String): List<QuotaBucketEntry> {
+        val stripped = normalizeRawOutput(rawOutput)
+        if (stripped.isEmpty()) return emptyList()
+
+        return stripped.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .mapNotNull(::parseBucketLine)
+            .toList()
+    }
+
+    private fun parseBucketLine(line: String): QuotaBucketEntry? {
+        if ('\t' in line) {
+            val cols = line.split('\t')
+                .map { it.trim() }
+                .dropLastWhile { it.isEmpty() }
+            if (cols.size >= 3) {
+                parseColumnsToBucket(
+                    modelGroup = cols[0],
+                    windowLabel = cols[1],
+                    percentToken = cols[2],
+                    resetToken = cols.getOrNull(3),
+                    strictResetToken = false,
+                )?.let { return it }
+            }
+        }
+
+        val multiSpaceCols = MULTI_SPACE_REGEX.split(line)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        if (multiSpaceCols.size in 3..4) {
+            parseColumnsToBucket(
+                modelGroup = multiSpaceCols[0],
+                windowLabel = multiSpaceCols[1],
+                percentToken = multiSpaceCols[2],
+                resetToken = multiSpaceCols.getOrNull(3),
+                strictResetToken = true,
+            )?.let { return it }
+        }
+
+        val singleSpaceMatch = SINGLE_SPACE_BUCKET_REGEX.matchEntire(line)
+        if (singleSpaceMatch != null) {
+            val modelGroup = singleSpaceMatch.groupValues[1].trim()
+            val windowLabel = singleSpaceMatch.groupValues[2].trim()
+            val percentNumber = singleSpaceMatch.groupValues[3]
+            val resetToken = singleSpaceMatch.groupValues[4].takeIf { it.isNotBlank() }
+            if (resetToken != null && !isValidOptionalResetToken(resetToken)) {
+                return null
+            }
+            return buildBucketEntry(
+                modelGroup = modelGroup,
+                windowLabel = windowLabel,
+                rawPercent = percentNumber.toDoubleOrNull() ?: return null,
+                resetToken = resetToken,
+            )
+        }
+
+        return null
+    }
+
+    private fun parseColumnsToBucket(
+        modelGroup: String,
+        windowLabel: String,
+        percentToken: String,
+        resetToken: String?,
+        strictResetToken: Boolean,
+    ): QuotaBucketEntry? {
+        if (modelGroup.isBlank() || windowLabel.isBlank()) return null
+        val pctMatch = BUCKET_PERCENT_REGEX.matchEntire(percentToken.trim()) ?: return null
+        val rawPercent = pctMatch.groupValues[1].toDoubleOrNull() ?: return null
+        val cleanResetToken = resetToken?.trim()?.takeIf { it.isNotEmpty() }
+        if (strictResetToken && cleanResetToken != null && !isValidOptionalResetToken(cleanResetToken)) {
+            return null
+        }
+        return buildBucketEntry(
+            modelGroup = modelGroup,
+            windowLabel = windowLabel,
+            rawPercent = rawPercent,
+            resetToken = cleanResetToken,
+        )
+    }
+
+    private fun buildBucketEntry(
+        modelGroup: String,
+        windowLabel: String,
+        rawPercent: Double,
+        resetToken: String?,
+    ): QuotaBucketEntry {
+        val isUsedPercent = USED_WINDOW_LABEL_REGEX.containsMatchIn(windowLabel) &&
+            !REMAINING_WINDOW_LABEL_REGEX.containsMatchIn(windowLabel)
+        val remaining = (if (isUsedPercent) 100.0 - rawPercent else rawPercent)
+            .coerceIn(0.0, 100.0)
+            .let(::roundToTenth)
+        val resetAtEpochMs = resetToken
+            ?.takeUnless { EMPTY_RESET_PLACEHOLDER_REGEX.matches(it) }
+            ?.let(::parseIsoTimestamp)
+
+        return QuotaBucketEntry(
+            modelGroup = modelGroup,
+            windowLabel = windowLabel,
+            windowKind = classifyWindowKind(windowLabel),
+            remainingPercent = remaining,
+            resetAtEpochMs = resetAtEpochMs,
+        )
+    }
+
+    private fun selectPrimaryBucket(buckets: List<QuotaBucketEntry>): QuotaBucketEntry =
+        buckets.firstOrNull {
+            it.windowKind == QuotaWindowKind.FIVE_HOUR &&
+                it.modelGroup.contains("gemini", ignoreCase = true)
+        } ?: buckets.firstOrNull {
+            it.windowKind == QuotaWindowKind.FIVE_HOUR
+        } ?: buckets.first()
+
+    private fun classifyWindowKind(windowLabel: String): QuotaWindowKind = when {
+        FIVE_HOUR_WINDOW_REGEX.containsMatchIn(windowLabel) -> QuotaWindowKind.FIVE_HOUR
+        WEEKLY_WINDOW_REGEX.containsMatchIn(windowLabel) -> QuotaWindowKind.WEEKLY
+        else -> QuotaWindowKind.OTHER
+    }
+
+    private fun isValidOptionalResetToken(token: String): Boolean =
+        ISO_TIMESTAMP_REGEX.matches(token) || EMPTY_RESET_PLACEHOLDER_REGEX.matches(token)
+
+    private fun normalizeRawOutput(rawOutput: String): String =
+        ANSI_REGEX.replace(rawOutput, "")
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .trim()
+
+    private fun roundToTenth(value: Double): Double = (value * 10.0).roundToInt() / 10.0
+
+    private fun normalizeResetEpochMs(epochMs: Long?): Long? =
+        epochMs?.takeIf { it > MIN_VALID_RESET_EPOCH_MS }
 
     private fun parseJsonPayload(
         jsonText: String,
@@ -116,13 +308,13 @@ object UsageOutputParser {
             null
         }
 
-        val resetEpoch = obj["resetAtEpochMs"]?.jsonPrimitive?.longOrNull
+        val resetEpoch = normalizeResetEpochMs(obj["resetAtEpochMs"]?.jsonPrimitive?.longOrNull)
             ?: obj["reset_at"]?.jsonPrimitive?.contentOrNull?.let { parseIsoTimestamp(it) }
             ?: obj["resetAt"]?.jsonPrimitive?.contentOrNull?.let { parseIsoTimestamp(it) }
 
         return UsageQuota(
             planTier = tier,
-            remainingPercent = computedRem?.coerceIn(0.0, 100.0)?.let { (it * 10.0).roundToInt() / 10.0 },
+            remainingPercent = computedRem?.coerceIn(0.0, 100.0)?.let(::roundToTenth),
             usedRequests = used,
             limitRequests = limit,
             resetAtEpochMs = resetEpoch,
@@ -172,9 +364,9 @@ object UsageOutputParser {
     }
 
     private fun parseResetEpochMs(text: String, nowEpochMs: Long): Long? {
-        ISO_TIMESTAMP_REGEX.find(text)?.value?.let { iso ->
-            parseIsoTimestamp(iso)?.let { return it }
-        }
+        ISO_TIMESTAMP_REGEX.findAll(text)
+            .firstNotNullOfOrNull { parseIsoTimestamp(it.value) }
+            ?.let { return it }
 
         RELATIVE_RESET_REGEX.find(text)?.let { match ->
             val days = match.groupValues[1].toLongOrNull() ?: 0L
@@ -189,13 +381,16 @@ object UsageOutputParser {
         return null
     }
 
-    private fun parseIsoTimestamp(iso: String): Long? = try {
-        Instant.parse(iso).toEpochMilli()
-    } catch (_: Exception) {
-        try {
-            OffsetDateTime.parse(iso).toInstant().toEpochMilli()
+    private fun parseIsoTimestamp(iso: String): Long? {
+        val epochMs = try {
+            Instant.parse(iso).toEpochMilli()
         } catch (_: Exception) {
-            null
+            try {
+                OffsetDateTime.parse(iso).toInstant().toEpochMilli()
+            } catch (_: Exception) {
+                null
+            }
         }
+        return normalizeResetEpochMs(epochMs)
     }
 }

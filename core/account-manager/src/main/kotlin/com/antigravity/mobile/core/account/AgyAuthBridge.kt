@@ -319,7 +319,7 @@ class ChrootAgyAuthBridge(
     override suspend fun fetchUsageOutput(profile: AccountProfile): Result<String> = withContext(ioDispatcher) {
         try {
             if (chrootManager.state.value !is ChrootState.Mounted) {
-                chrootManager.mountAll()
+                chrootManager.mountAll().getOrThrow()
             }
             val spec = ChrootCommandSpec(
                 binaryPath = ChrootConstants.DEFAULT_AGY_BINARY,
@@ -328,13 +328,34 @@ class ChrootAgyAuthBridge(
             )
             val argv = chrootManager.buildChrootCommand(spec)
             val res = rootExecutor.execArgv(argv = argv, timeoutMs = 30_000L)
-            val combined = res.stdout.ifBlank { res.stderr }.trim()
-            if (!res.isSuccess && combined.isEmpty()) {
-                return@withContext Result.failure(
-                    IOException("Failed to fetch /usage for profile ${profile.id} (exit=${res.exitCode})"),
-                )
+            val stdout = res.stdout
+                .replace("\r\n", "\n")
+                .replace('\r', '\n')
+                .trim('\n', '\r')
+            val stderr = res.stderr
+                .replace("\r\n", "\n")
+                .replace('\r', '\n')
+                .trim('\n', '\r')
+
+            if (res.isSuccess) {
+                val output = stdout.ifBlank { stderr }
+                if (output.isBlank()) {
+                    return@withContext Result.failure(
+                        IOException("Empty /usage output for profile ${profile.id}"),
+                    )
+                }
+                return@withContext Result.success(output)
             }
-            Result.success(combined)
+
+            // Preserve structured multi-bucket stdout even if a CLI build exited non-zero.
+            if (stdout.isNotBlank() && UsageOutputParser.parseBuckets(stdout).isNotEmpty()) {
+                return@withContext Result.success(stdout)
+            }
+
+            val detail = stderr.ifBlank { stdout }.ifBlank { "no output" }.take(300)
+            Result.failure(
+                IOException("Failed to fetch /usage for profile ${profile.id} (exit=${res.exitCode}): $detail"),
+            )
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
