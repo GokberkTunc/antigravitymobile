@@ -8,6 +8,7 @@ import com.antigravity.mobile.contracts.AcpClient
 import com.antigravity.mobile.contracts.AcpEvent
 import com.antigravity.mobile.contracts.AcpModel
 import com.antigravity.mobile.contracts.AcpSessionConfig
+import com.antigravity.mobile.contracts.AcpSessionInfo
 import com.antigravity.mobile.contracts.AcpSessionState
 import com.antigravity.mobile.contracts.AndroidMcpServer
 import com.antigravity.mobile.contracts.AuthFlowState
@@ -32,8 +33,13 @@ import com.antigravity.mobile.contracts.WorkspaceProject
 import com.antigravity.mobile.feature.workspace.data.InMemoryWorkspaceLocalStore
 import com.antigravity.mobile.feature.workspace.data.WorkspaceLocalStore
 import com.antigravity.mobile.feature.workspace.data.WorkspaceSnapshot
+import com.antigravity.mobile.feature.workspace.model.AppDestination
+import com.antigravity.mobile.feature.workspace.model.AppSettings
 import com.antigravity.mobile.feature.workspace.model.AuthBannerState
+import com.antigravity.mobile.feature.workspace.model.DEVICE_FALLBACK_PROJECT
+import com.antigravity.mobile.feature.workspace.model.MentionSuggestion
 import com.antigravity.mobile.feature.workspace.model.OverviewTab
+import com.antigravity.mobile.feature.workspace.model.QuotaBucketParser
 import com.antigravity.mobile.feature.workspace.model.QuotaWarningState
 import com.antigravity.mobile.feature.workspace.model.RootfsSourceOption
 import com.antigravity.mobile.feature.workspace.model.SettingsCategory
@@ -44,7 +50,6 @@ import com.antigravity.mobile.feature.workspace.model.WorkspaceArtifact
 import com.antigravity.mobile.feature.workspace.model.WorkspaceConversation
 import com.antigravity.mobile.feature.workspace.model.WorkspaceUiState
 import com.antigravity.mobile.feature.workspace.model.defaultMentions
-import com.antigravity.mobile.feature.workspace.model.defaultProjects
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -81,7 +86,35 @@ class WorkspaceViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(WorkspaceUiState())
     val uiState: StateFlow<WorkspaceUiState> = _uiState.asStateFlow()
 
+    internal var clockMs: () -> Long = System::currentTimeMillis
+
     private var hasAutoRefreshedQuota = false
+    private var lastRootBackPressEpochMs: Long = 0L
+
+    internal constructor(
+        accountRepository: AccountRepository,
+        acpClient: AcpClient,
+        androidMcpServer: AndroidMcpServer,
+        automationScheduler: AutomationScheduler,
+        securityPolicyEngine: SecurityPolicyEngine,
+        voiceTranscriber: VoiceTranscriber,
+        chrootManager: ChrootManager,
+        rootExecutor: RootExecutor,
+        localStore: WorkspaceLocalStore = InMemoryWorkspaceLocalStore(),
+        clockMs: () -> Long,
+    ) : this(
+        accountRepository = accountRepository,
+        acpClient = acpClient,
+        androidMcpServer = androidMcpServer,
+        automationScheduler = automationScheduler,
+        securityPolicyEngine = securityPolicyEngine,
+        voiceTranscriber = voiceTranscriber,
+        chrootManager = chrootManager,
+        rootExecutor = rootExecutor,
+        localStore = localStore,
+    ) {
+        this.clockMs = clockMs
+    }
 
     init {
         hydrateFromLocalStore()
@@ -114,7 +147,7 @@ class WorkspaceViewModel @Inject constructor(
                 it.copy(
                     showMentionMenu = true,
                     showSlashMenu = false,
-                    mentionSuggestions = buildMentionSuggestions(it.activeProject),
+                    mentionSuggestions = buildMentionSuggestions(it.selectedProject),
                 )
             }
 
@@ -145,24 +178,63 @@ class WorkspaceViewModel @Inject constructor(
             is WorkspaceAction.DeleteConversation -> handleDeleteConversation(action.conversationId)
             is WorkspaceAction.RenameConversation -> handleRenameConversation(action.conversationId, action.newTitle)
             is WorkspaceAction.TogglePinConversation -> handleTogglePinConversation(action.conversationId)
-            is WorkspaceAction.OpenSettings -> handleOpenSettings(action.category)
-            WorkspaceAction.CloseSettings -> _uiState.update {
-                it.copy(showSettings = false, onboardingReturnToSettings = false)
+
+            // Explicit Back-Stack Navigation & Modal Sheets
+            WorkspaceAction.NavigateBack -> handleNavigateBack()
+            WorkspaceAction.NavigateToHub -> handleNavigateToHub()
+            is WorkspaceAction.NavigateToConversation -> handleNavigateToConversation(action.conversationId)
+            WorkspaceAction.OpenSettingsList -> handleOpenSettingsList()
+            is WorkspaceAction.OpenSettingsDetail -> handleOpenSettingsDetail(action.category)
+            WorkspaceAction.OpenModelPickerSheet -> _uiState.update {
+                it.copy(
+                    showModelPickerSheet = true,
+                    showComposerToolsSheet = false,
+                    showSlashMenu = false,
+                    showMentionMenu = false,
+                )
             }
 
+            WorkspaceAction.CloseModelPickerSheet -> _uiState.update { it.copy(showModelPickerSheet = false) }
+            WorkspaceAction.OpenComposerToolsSheet -> _uiState.update {
+                it.copy(
+                    showComposerToolsSheet = true,
+                    showModelPickerSheet = false,
+                    showSlashMenu = false,
+                    showMentionMenu = false,
+                )
+            }
+
+            WorkspaceAction.CloseComposerToolsSheet -> _uiState.update { it.copy(showComposerToolsSheet = false) }
+            WorkspaceAction.ConsumeExitApp -> {
+                lastRootBackPressEpochMs = 0L
+                _uiState.update {
+                    it.copy(
+                        shouldExitApp = false,
+                        exitConfirmPending = false,
+                        exitConfirmMessage = null,
+                    )
+                }
+            }
+
+            WorkspaceAction.DismissExitConfirm -> {
+                lastRootBackPressEpochMs = 0L
+                _uiState.update {
+                    it.copy(
+                        exitConfirmPending = false,
+                        exitConfirmMessage = null,
+                    )
+                }
+            }
+
+            is WorkspaceAction.OpenSettings -> handleOpenSettings(action.category)
+            WorkspaceAction.CloseSettings -> handleCloseSettings()
             is WorkspaceAction.SelectSettingsCategory -> handleSelectSettingsCategory(action.category)
             is WorkspaceAction.UpdateSettings -> handleUpdateSettings(action.transform)
             WorkspaceAction.OpenQuotaSheet -> handleOpenQuotaSheet()
             WorkspaceAction.CloseQuotaSheet -> _uiState.update { it.copy(showQuotaSheet = false) }
             WorkspaceAction.RefreshAllQuotas -> handleRefreshAllQuotas()
             WorkspaceAction.DismissOnboarding -> handleDismissOnboarding()
-            is WorkspaceAction.OpenOnboardingFromSettings -> _uiState.update {
-                it.copy(
-                    showOnboarding = true,
-                    showSettings = false,
-                    onboardingReturnToSettings = action.fromSettings,
-                )
-            }
+            is WorkspaceAction.OpenOnboardingFromSettings -> handleOpenOnboardingFromSettings(action.fromSettings)
 
             WorkspaceAction.UnmountChroot -> handleUnmountChroot()
             is WorkspaceAction.DeleteProfile -> handleDeleteProfile(action.profileId)
@@ -184,7 +256,7 @@ class WorkspaceViewModel @Inject constructor(
             WorkspaceAction.CloseOverviewSheet -> _uiState.update { it.copy(isOverviewSheetVisible = false) }
             is WorkspaceAction.SelectOverviewTab -> _uiState.update { it.copy(selectedOverviewTab = action.tab) }
             is WorkspaceAction.SelectSwarmSubTab -> _uiState.update { it.copy(selectedSwarmSubTab = action.subTab) }
-            is WorkspaceAction.SetShowOnboarding -> _uiState.update { it.copy(showOnboarding = action.show) }
+            is WorkspaceAction.SetShowOnboarding -> handleSetShowOnboarding(action.show)
             WorkspaceAction.CheckRootStatus -> handleCheckRootStatus()
             is WorkspaceAction.RunRootBootstrap -> handleRunRootBootstrap(action)
             is WorkspaceAction.SelectRootfsSource -> _uiState.update {
@@ -201,15 +273,7 @@ class WorkspaceViewModel @Inject constructor(
 
             WorkspaceAction.SetupChroot -> handleSetupChroot()
             WorkspaceAction.CheckOrInstallAgy -> handleCheckOrInstallAgy()
-            WorkspaceAction.CompleteOnboarding -> _uiState.update {
-                it.copy(
-                    showOnboarding = false,
-                    showSettings = if (it.onboardingReturnToSettings) true else it.showSettings,
-                    onboardingReturnToSettings = false,
-                    onboarding = it.onboarding.copy(isCompleted = true),
-                )
-            }
-
+            WorkspaceAction.CompleteOnboarding -> handleCompleteOnboarding()
             WorkspaceAction.DismissError -> _uiState.update { it.copy(errorMessage = null) }
         }
     }
@@ -524,7 +588,7 @@ class WorkspaceViewModel @Inject constructor(
 
         val lastToken = text.substringAfterLast(' ', missingDelimiterValue = text)
         val isMentionActive = !isSlashActive && lastToken.startsWith("@")
-        val allMentions = buildMentionSuggestions(_uiState.value.activeProject)
+        val allMentions = buildMentionSuggestions(_uiState.value.selectedProject)
         val mentionMatches = if (isMentionActive) {
             allMentions.filter {
                 it.token.startsWith(lastToken, ignoreCase = true) ||
@@ -719,13 +783,14 @@ class WorkspaceViewModel @Inject constructor(
             role = ChatMessageRole.USER,
             content = prompt,
             attachments = attachments,
-            timestampEpochMs = System.currentTimeMillis(),
+            timestampEpochMs = clockMs(),
             isStreaming = false,
         )
         _uiState.update { state ->
             syncActiveConversation(
                 state = state,
                 newMessages = state.messages + userMessage,
+                sessionId = state.activeConversation?.sessionId,
                 userPromptForAutoTitle = prompt,
             )
         }
@@ -747,30 +812,71 @@ class WorkspaceViewModel @Inject constructor(
         }
     }
 
-    private suspend fun ensureActiveSession(): com.antigravity.mobile.contracts.AcpSessionInfo {
-        val existing = acpClient.activeSession.value ?: _uiState.value.activeSession
-        if (existing != null && _uiState.value.sessionState != AcpSessionState.DISCONNECTED &&
-            _uiState.value.sessionState != AcpSessionState.CLOSED
-        ) {
+    private suspend fun ensureActiveSession(): AcpSessionInfo {
+        val state = _uiState.value
+        val profileId = state.activeProfile?.id ?: "default"
+        val workspaceDir = state.activeProject.rootPath
+        val activeConvSessionId = state.activeConversation?.sessionId
+        val existing = acpClient.activeSession.value ?: state.activeSession
+
+        val canReuseExisting = existing != null &&
+            state.sessionState !in NON_REUSABLE_SESSION_STATES &&
+            existing.state !in NON_REUSABLE_SESSION_STATES &&
+            existing.profileId == profileId &&
+            existing.workspaceDir == workspaceDir &&
+            (activeConvSessionId == null || existing.sessionId == activeConvSessionId)
+
+        if (canReuseExisting) {
+            attachSessionIdToActiveConversation(existing)
             return existing
         }
 
-        val state = _uiState.value
-        val profileId = state.activeProfile?.id ?: "default"
+        val shouldDropResumeId = state.sessionState in setOf(AcpSessionState.ERROR, AcpSessionState.AWAITING_AUTH) &&
+            existing?.sessionId != null &&
+            existing.sessionId == activeConvSessionId
+        val resumeId = if (shouldDropResumeId) null else activeConvSessionId
         val mcpPort = state.mcpHealth.endpointPort ?: 0
         val config = AcpSessionConfig(
             profileId = profileId,
-            workspaceDir = state.activeProject.rootPath,
-            additionalDirs = listOf("/mnt/sdcard", state.activeProject.rootPath).distinct(),
+            workspaceDir = workspaceDir,
+            additionalDirs = listOf("/mnt/sdcard", workspaceDir).distinct(),
             model = state.selectedModel,
             thinkingEffort = state.selectedEffort,
             permissionMode = state.permissionMode,
             ideMcpPort = mcpPort,
             processPerSession = state.settings.acpProcessPerSession,
-            resumeConversationId = state.activeConversation?.sessionId,
+            resumeConversationId = resumeId,
             sandboxed = state.settings.acpSandboxEnabled,
         )
-        return acpClient.startSession(config).getOrThrow()
+        val started = acpClient.startSession(config).getOrThrow()
+        attachSessionIdToActiveConversation(started)
+        return started
+    }
+
+    private fun attachSessionIdToActiveConversation(session: AcpSessionInfo) {
+        var didUpdateConversation = false
+        _uiState.update { state ->
+            val activeId = state.activeConversationId
+            val updatedConversations = if (activeId != null) {
+                state.conversations.map { conv ->
+                    if (conv.id == activeId && conv.sessionId != session.sessionId) {
+                        didUpdateConversation = true
+                        conv.copy(sessionId = session.sessionId)
+                    } else {
+                        conv
+                    }
+                }
+            } else {
+                state.conversations
+            }
+            state.copy(
+                activeSession = session,
+                conversations = updatedConversations,
+            )
+        }
+        if (didUpdateConversation) {
+            persistSnapshot()
+        }
     }
 
     private fun handleSelectPermissionMode(mode: PermissionMode) {
@@ -835,7 +941,10 @@ class WorkspaceViewModel @Inject constructor(
                 accountRepository.switchActiveProfile(created.id).getOrThrow()
                 created
             }.onSuccess { created ->
-                appendSystemMessage("Yeni profil oluşturuldu ve etkinleştirildi: ${created.displayName}")
+                appendSystemMessage(
+                    content = "Yeni profil oluşturuldu ve etkinleştirildi: ${created.displayName}",
+                    onlyIfConversationActive = true,
+                )
             }.onFailure { error ->
                 _uiState.update { it.copy(errorMessage = error.message ?: "Profil oluşturulamadı") }
             }
@@ -859,7 +968,10 @@ class WorkspaceViewModel @Inject constructor(
                 evaluateQuotaWarning(switched)
                 switched
             }.onSuccess { switched ->
-                appendSystemMessage("Aktif Google hesabı değiştirildi: ${switched.displayName}")
+                appendSystemMessage(
+                    content = "Aktif Google hesabı değiştirildi: ${switched.displayName}",
+                    onlyIfConversationActive = true,
+                )
             }.onFailure { error ->
                 _uiState.update { it.copy(errorMessage = error.message ?: "Hesap değiştirilemedi") }
             }
@@ -935,7 +1047,10 @@ class WorkspaceViewModel @Inject constructor(
                         ),
                     )
                 }
-                appendSystemMessage("Google hesabı doğrulandı: $verifiedLabel")
+                appendSystemMessage(
+                    content = "Google hesabı doğrulandı: $verifiedLabel",
+                    onlyIfConversationActive = true,
+                )
             }.onFailure { error ->
                 val msg = error.message ?: "Doğrulama kodu reddedildi"
                 _uiState.update { state ->
@@ -979,7 +1094,10 @@ class WorkspaceViewModel @Inject constructor(
                         ),
                     )
                 }
-                appendSystemMessage("Masaüstü ~/.gemini profili içe aktarıldı: ${profile.displayName}")
+                appendSystemMessage(
+                    content = "Masaüstü ~/.gemini profili içe aktarıldı: ${profile.displayName}",
+                    onlyIfConversationActive = true,
+                )
             }.onFailure { error ->
                 val msg = error.message ?: "Masaüstü profili içe aktarılamadı"
                 _uiState.update { state ->
@@ -1010,10 +1128,16 @@ class WorkspaceViewModel @Inject constructor(
                 quota
             }.onSuccess { quota ->
                 if (postChatSummary) {
-                    val percentStr = quota.remainingPercent?.let { "%.1f%%".format(Locale.US, it) } ?: "Bilinmiyor"
+                    val selectedModel = _uiState.value.selectedModel
+                    val headline = QuotaBucketParser.primaryHeadlinePercent(quota, selectedModel)
+                    val weekly = QuotaBucketParser.weeklyPercent(quota, selectedModel)
+                    val percentStr = headline?.let { "%.1f%%".format(Locale.US, it) } ?: "Bilinmiyor"
                     val summary = buildString {
                         append("`/usage` — **${targetProfile.displayName}** (${quota.planTier.name})\n")
                         append("Kalan kota: $percentStr")
+                        if (weekly != null) {
+                            append(" • Haftalık: ${"%.0f%%".format(Locale.US, weekly)}")
+                        }
                         if (quota.usedRequests != null && quota.limitRequests != null) {
                             append(" (${quota.usedRequests}/${quota.limitRequests} istek)")
                         }
@@ -1030,7 +1154,15 @@ class WorkspaceViewModel @Inject constructor(
     }
 
     private suspend fun evaluateQuotaWarning(profile: AccountProfile?) {
-        if (profile == null || !profile.quota.isNearLimit) {
+        if (profile == null) {
+            _uiState.update { it.copy(quotaWarning = null) }
+            return
+        }
+        val effectiveRemaining = QuotaBucketParser.primaryHeadlinePercent(
+            quota = profile.quota,
+            selectedModel = _uiState.value.selectedModel,
+        ) ?: profile.quota.remainingPercent
+        if (effectiveRemaining == null || effectiveRemaining > 15.0) {
             _uiState.update { it.copy(quotaWarning = null) }
             return
         }
@@ -1042,7 +1174,7 @@ class WorkspaceViewModel @Inject constructor(
             it.copy(
                 quotaWarning = QuotaWarningState(
                     currentProfile = profile,
-                    remainingPercent = profile.quota.remainingPercent ?: 0.0,
+                    remainingPercent = effectiveRemaining,
                     suggestedFallbackProfile = fallback,
                 ),
             )
@@ -1055,7 +1187,7 @@ class WorkspaceViewModel @Inject constructor(
             val currentConv = state.activeConversation
             if (currentConv != null && currentConv.projectId == target.id) {
                 state.copy(
-                    activeProject = target,
+                    selectedProjectId = target.id,
                     expandedProjectIds = state.expandedProjectIds + target.id,
                     mentionSuggestions = buildMentionSuggestions(target),
                 )
@@ -1063,17 +1195,10 @@ class WorkspaceViewModel @Inject constructor(
                 val existingConv = state.conversations
                     .filter { it.projectId == target.id }
                     .maxByOrNull { it.updatedAtEpochMs }
-                val nextConv = existingConv ?: newEmptyConversation(target.id)
-                val updatedConversations = if (existingConv != null) {
-                    state.conversations
-                } else {
-                    listOf(nextConv) + state.conversations
-                }
                 state.copy(
-                    activeProject = target,
-                    conversations = updatedConversations,
-                    activeConversationId = nextConv.id,
-                    messages = nextConv.messages,
+                    selectedProjectId = target.id,
+                    activeConversationId = existingConv?.id,
+                    messages = existingConv?.messages.orEmpty(),
                     expandedProjectIds = state.expandedProjectIds + target.id,
                     mentionSuggestions = buildMentionSuggestions(target),
                 )
@@ -1093,15 +1218,13 @@ class WorkspaceViewModel @Inject constructor(
             rootPath = path,
             profileId = _uiState.value.activeProfile?.id ?: "default",
             defaultPermissionMode = action.defaultPermissionMode,
-            lastOpenedAtEpochMs = System.currentTimeMillis(),
+            lastOpenedAtEpochMs = clockMs(),
         )
-        val initialConversation = newEmptyConversation(newProject.id)
         _uiState.update { state ->
             state.copy(
                 projects = state.projects + newProject,
-                activeProject = newProject,
-                conversations = listOf(initialConversation) + state.conversations,
-                activeConversationId = initialConversation.id,
+                selectedProjectId = newProject.id,
+                activeConversationId = null,
                 messages = emptyList(),
                 expandedProjectIds = state.expandedProjectIds + newProject.id,
                 mentionSuggestions = buildMentionSuggestions(newProject),
@@ -1117,15 +1240,10 @@ class WorkspaceViewModel @Inject constructor(
             val updatedProjects = state.projects.map { project ->
                 if (project.id == projectId) project.copy(name = cleanName) else project
             }
-            val updatedActive = if (state.activeProject.id == projectId) {
-                state.activeProject.copy(name = cleanName)
-            } else {
-                state.activeProject
-            }
+            val selected = updatedProjects.firstOrNull { it.id == state.selectedProjectId }
             state.copy(
                 projects = updatedProjects,
-                activeProject = updatedActive,
-                mentionSuggestions = buildMentionSuggestions(updatedActive),
+                mentionSuggestions = buildMentionSuggestions(selected),
             )
         }
         persistSnapshot()
@@ -1134,37 +1252,72 @@ class WorkspaceViewModel @Inject constructor(
     private fun handleDeleteProject(projectId: String) {
         _uiState.update { state ->
             if (state.projects.none { it.id == projectId }) return@update state
-            val remainingProjects = state.projects
-                .filterNot { it.id == projectId }
-                .ifEmpty { listOf(defaultProjects().first()) }
+            val remainingProjects = state.projects.filterNot { it.id == projectId }
             val remainingConversations = state.conversations.filterNot { it.projectId == projectId }
             val updatedExpanded = state.expandedProjectIds - projectId
+            val activeConvWasDeleted = state.activeConversation?.projectId == projectId
 
-            if (state.activeProject.id != projectId) {
-                state.copy(
-                    projects = remainingProjects,
-                    conversations = remainingConversations,
-                    expandedProjectIds = updatedExpanded,
+            if (remainingProjects.isEmpty()) {
+                val nextStack = if (state.currentDestination is AppDestination.Conversation) {
+                    listOf(AppDestination.Hub)
+                } else {
+                    state.backStack
+                }
+                withBackStack(
+                    state = state.copy(
+                        projects = emptyList(),
+                        selectedProjectId = null,
+                        conversations = remainingConversations,
+                        activeConversationId = null,
+                        messages = emptyList(),
+                        expandedProjectIds = emptySet(),
+                        mentionSuggestions = defaultMentions(),
+                    ),
+                    rawStack = nextStack,
                 )
-            } else {
+            } else if (state.selectedProjectId == projectId) {
                 val nextProject = remainingProjects.first()
                 val existingConv = remainingConversations
                     .filter { it.projectId == nextProject.id }
                     .maxByOrNull { it.updatedAtEpochMs }
-                val nextConv = existingConv ?: newEmptyConversation(nextProject.id)
-                val finalConversations = if (existingConv != null) {
-                    remainingConversations
+                val nextStack = if (state.currentDestination is AppDestination.Conversation) {
+                    if (existingConv != null) {
+                        state.backStack.dropLast(1) + AppDestination.Conversation(existingConv.id)
+                    } else {
+                        listOf(AppDestination.Hub)
+                    }
                 } else {
-                    listOf(nextConv) + remainingConversations
+                    state.backStack
                 }
-                state.copy(
-                    projects = remainingProjects,
-                    activeProject = nextProject,
-                    conversations = finalConversations,
-                    activeConversationId = nextConv.id,
-                    messages = nextConv.messages,
-                    expandedProjectIds = updatedExpanded + nextProject.id,
-                    mentionSuggestions = buildMentionSuggestions(nextProject),
+                withBackStack(
+                    state = state.copy(
+                        projects = remainingProjects,
+                        selectedProjectId = nextProject.id,
+                        conversations = remainingConversations,
+                        activeConversationId = existingConv?.id,
+                        messages = existingConv?.messages.orEmpty(),
+                        expandedProjectIds = updatedExpanded + nextProject.id,
+                        mentionSuggestions = buildMentionSuggestions(nextProject),
+                    ),
+                    rawStack = nextStack,
+                )
+            } else {
+                val nextActiveConvId = if (activeConvWasDeleted) null else state.activeConversationId
+                val nextMessages = if (activeConvWasDeleted) emptyList() else state.messages
+                val nextStack = if (activeConvWasDeleted && state.currentDestination is AppDestination.Conversation) {
+                    listOf(AppDestination.Hub)
+                } else {
+                    state.backStack
+                }
+                withBackStack(
+                    state = state.copy(
+                        projects = remainingProjects,
+                        conversations = remainingConversations,
+                        activeConversationId = nextActiveConvId,
+                        messages = nextMessages,
+                        expandedProjectIds = updatedExpanded,
+                    ),
+                    rawStack = nextStack,
                 )
             }
         }
@@ -1196,22 +1349,61 @@ class WorkspaceViewModel @Inject constructor(
 
         val targetProject = projectId?.let { id ->
             currentState.projects.firstOrNull { it.id == id }
-        } ?: currentState.activeProject
+        } ?: currentState.selectedProject ?: currentState.projects.firstOrNull()
+        val cleanTitle = title?.trim()?.ifBlank { null }
 
-        val cleanTitle = title?.trim()?.ifBlank { null } ?: WorkspaceConversation.DEFAULT_TITLE
+        if (cleanTitle == null) {
+            // Fresh draft conversation: avoid cluttering the list with empty "Yeni Sohbet" rows.
+            _uiState.update { state ->
+                val nextExpanded = if (targetProject != null) {
+                    state.expandedProjectIds + targetProject.id
+                } else {
+                    state.expandedProjectIds
+                }
+                withBackStack(
+                    state = state.copy(
+                        selectedProjectId = targetProject?.id ?: state.selectedProjectId,
+                        activeConversationId = null,
+                        messages = emptyList(),
+                        expandedProjectIds = nextExpanded,
+                        mentionSuggestions = buildMentionSuggestions(targetProject),
+                        showSlashMenu = false,
+                        showMentionMenu = false,
+                        showModelPickerSheet = false,
+                        showComposerToolsSheet = false,
+                    ),
+                    rawStack = listOf(AppDestination.Hub, AppDestination.Conversation(null)),
+                )
+            }
+            return
+        }
+
+        val targetProjectId = targetProject?.id ?: DEVICE_FALLBACK_PROJECT.id
         val newConv = newEmptyConversation(
-            projectId = targetProject.id,
+            projectId = targetProjectId,
             title = cleanTitle,
         )
 
         _uiState.update { state ->
-            state.copy(
-                activeProject = targetProject,
-                conversations = listOf(newConv) + state.conversations,
-                activeConversationId = newConv.id,
-                messages = emptyList(),
-                expandedProjectIds = state.expandedProjectIds + targetProject.id,
-                mentionSuggestions = buildMentionSuggestions(targetProject),
+            val nextExpanded = if (targetProject != null) {
+                state.expandedProjectIds + targetProject.id
+            } else {
+                state.expandedProjectIds
+            }
+            withBackStack(
+                state = state.copy(
+                    selectedProjectId = targetProject?.id ?: state.selectedProjectId,
+                    conversations = listOf(newConv) + state.conversations,
+                    activeConversationId = newConv.id,
+                    messages = emptyList(),
+                    expandedProjectIds = nextExpanded,
+                    mentionSuggestions = buildMentionSuggestions(targetProject),
+                    showSlashMenu = false,
+                    showMentionMenu = false,
+                    showModelPickerSheet = false,
+                    showComposerToolsSheet = false,
+                ),
+                rawStack = listOf(AppDestination.Hub, AppDestination.Conversation(newConv.id)),
             )
         }
         persistSnapshot()
@@ -1220,16 +1412,26 @@ class WorkspaceViewModel @Inject constructor(
     private fun handleSelectConversation(conversationId: String) {
         val current = _uiState.value
         val target = current.conversations.firstOrNull { it.id == conversationId } ?: return
-        val targetProject = current.projects.firstOrNull { it.id == target.projectId } ?: current.activeProject
-        val projectChanged = targetProject.id != current.activeProject.id
+        val targetProject = current.projects.firstOrNull { it.id == target.projectId }
+        val projectChanged = targetProject != null && targetProject.id != current.selectedProjectId
 
         _uiState.update { state ->
-            state.copy(
-                activeProject = targetProject,
-                activeConversationId = target.id,
-                messages = target.messages,
-                expandedProjectIds = state.expandedProjectIds + targetProject.id,
-                mentionSuggestions = buildMentionSuggestions(targetProject),
+            val nextExpanded = if (targetProject != null) {
+                state.expandedProjectIds + targetProject.id
+            } else {
+                state.expandedProjectIds
+            }
+            withBackStack(
+                state = state.copy(
+                    selectedProjectId = targetProject?.id ?: state.selectedProjectId,
+                    activeConversationId = target.id,
+                    messages = target.messages,
+                    expandedProjectIds = nextExpanded,
+                    mentionSuggestions = buildMentionSuggestions(targetProject ?: state.selectedProject),
+                    showSlashMenu = false,
+                    showMentionMenu = false,
+                ),
+                rawStack = listOf(AppDestination.Hub, AppDestination.Conversation(target.id)),
             )
         }
         if (projectChanged) {
@@ -1250,17 +1452,32 @@ class WorkspaceViewModel @Inject constructor(
                     .filter { it.projectId == target.projectId }
                     .maxByOrNull { it.updatedAtEpochMs }
                 if (nextInProject != null) {
-                    state.copy(
-                        conversations = remaining,
-                        activeConversationId = nextInProject.id,
-                        messages = nextInProject.messages,
+                    val nextStack = if (state.currentDestination is AppDestination.Conversation) {
+                        state.backStack.dropLast(1) + AppDestination.Conversation(nextInProject.id)
+                    } else {
+                        state.backStack
+                    }
+                    withBackStack(
+                        state = state.copy(
+                            conversations = remaining,
+                            activeConversationId = nextInProject.id,
+                            messages = nextInProject.messages,
+                        ),
+                        rawStack = nextStack,
                     )
                 } else {
-                    val fresh = newEmptyConversation(target.projectId)
-                    state.copy(
-                        conversations = listOf(fresh) + remaining,
-                        activeConversationId = fresh.id,
-                        messages = emptyList(),
+                    val nextStack = if (state.currentDestination is AppDestination.Conversation) {
+                        state.backStack.dropLast(1).ifEmpty { listOf(AppDestination.Hub) }
+                    } else {
+                        state.backStack
+                    }
+                    withBackStack(
+                        state = state.copy(
+                            conversations = remaining,
+                            activeConversationId = null,
+                            messages = emptyList(),
+                        ),
+                        rawStack = nextStack,
                     )
                 }
             }
@@ -1271,7 +1488,7 @@ class WorkspaceViewModel @Inject constructor(
     private fun handleRenameConversation(conversationId: String, newTitle: String) {
         val cleanTitle = newTitle.trim()
         if (cleanTitle.isEmpty()) return
-        val now = System.currentTimeMillis()
+        val now = clockMs()
         _uiState.update { state ->
             state.copy(
                 conversations = state.conversations.map { conv ->
@@ -1297,11 +1514,169 @@ class WorkspaceViewModel @Inject constructor(
         persistSnapshot()
     }
 
-    private fun handleOpenSettings(category: SettingsCategory) {
-        _uiState.update {
-            it.copy(
-                showSettings = true,
-                selectedSettingsCategory = category,
+    // --- Deterministic Navigation Back-Stack Handlers ---
+
+    private fun handleNavigateBack() {
+        _uiState.update { state ->
+            when {
+                // 1. Composer menus
+                state.showSlashMenu || state.showMentionMenu -> {
+                    state.copy(showSlashMenu = false, showMentionMenu = false)
+                }
+
+                // 2. Model picker bottom sheet
+                state.showModelPickerSheet -> {
+                    state.copy(showModelPickerSheet = false)
+                }
+
+                // 3. Composer tools bottom sheet
+                state.showComposerToolsSheet -> {
+                    state.copy(showComposerToolsSheet = false)
+                }
+
+                // 4. Quota dashboard bottom sheet
+                state.showQuotaSheet -> {
+                    state.copy(showQuotaSheet = false)
+                }
+
+                // 5. Overview bottom sheet (Subagents / Swarm / Diffs)
+                state.isOverviewSheetVisible -> {
+                    state.copy(isOverviewSheetVisible = false)
+                }
+
+                // 6. Pop back-stack destination cleanly
+                state.backStack.size > 1 -> {
+                    val popped = state.backStack.dropLast(1)
+                    val newTop = popped.last()
+                    val syncedState = if (newTop is AppDestination.Conversation && newTop.conversationId != null) {
+                        val conv = state.conversations.firstOrNull { it.id == newTop.conversationId }
+                        if (conv != null && state.activeConversationId != conv.id) {
+                            state.copy(activeConversationId = conv.id, messages = conv.messages)
+                        } else {
+                            state
+                        }
+                    } else {
+                        state
+                    }
+                    withBackStack(syncedState, popped)
+                }
+
+                // 7. Root Hub -> Double-Back-to-Exit (2000ms window)
+                else -> {
+                    val now = clockMs()
+                    val elapsed = now - lastRootBackPressEpochMs
+                    if (state.exitConfirmPending && lastRootBackPressEpochMs > 0L && elapsed in 0L..EXIT_CONFIRM_WINDOW_MS) {
+                        lastRootBackPressEpochMs = 0L
+                        state.copy(
+                            exitConfirmPending = false,
+                            exitConfirmMessage = null,
+                            shouldExitApp = true,
+                        )
+                    } else {
+                        lastRootBackPressEpochMs = now
+                        state.copy(
+                            exitConfirmPending = true,
+                            exitConfirmMessage = EXIT_CONFIRM_MESSAGE,
+                            shouldExitApp = false,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun handleNavigateToHub() {
+        _uiState.update { state ->
+            withBackStack(
+                state = state.copy(
+                    showSlashMenu = false,
+                    showMentionMenu = false,
+                    showModelPickerSheet = false,
+                    showComposerToolsSheet = false,
+                    showQuotaSheet = false,
+                    isOverviewSheetVisible = false,
+                ),
+                rawStack = listOf(AppDestination.Hub),
+            )
+        }
+    }
+
+    private fun handleNavigateToConversation(conversationId: String?) {
+        if (conversationId != null && _uiState.value.conversations.any { it.id == conversationId }) {
+            handleSelectConversation(conversationId)
+            return
+        }
+        _uiState.update { state ->
+            withBackStack(
+                state = state.copy(
+                    activeConversationId = null,
+                    messages = emptyList(),
+                    showSlashMenu = false,
+                    showMentionMenu = false,
+                    showModelPickerSheet = false,
+                    showComposerToolsSheet = false,
+                    showQuotaSheet = false,
+                    isOverviewSheetVisible = false,
+                ),
+                rawStack = listOf(AppDestination.Hub, AppDestination.Conversation(null)),
+            )
+        }
+    }
+
+    private fun handleOpenSettingsList() {
+        _uiState.update { state ->
+            val existingIdx = state.backStack.indexOf(AppDestination.SettingsList)
+            val nextStack = if (existingIdx >= 0) {
+                state.backStack.take(existingIdx + 1)
+            } else {
+                val base = state.backStack
+                    .dropLastWhile {
+                        it is AppDestination.Onboarding ||
+                            it is AppDestination.SettingsDetail ||
+                            it is AppDestination.SettingsList
+                    }
+                    .ifEmpty { listOf(AppDestination.Hub) }
+                base + AppDestination.SettingsList
+            }
+            withBackStack(
+                state = state.copy(
+                    showSlashMenu = false,
+                    showMentionMenu = false,
+                    showModelPickerSheet = false,
+                    showComposerToolsSheet = false,
+                    showQuotaSheet = false,
+                    isOverviewSheetVisible = false,
+                ),
+                rawStack = nextStack,
+            )
+        }
+    }
+
+    private fun handleOpenSettingsDetail(category: SettingsCategory) {
+        _uiState.update { state ->
+            val existingListIdx = state.backStack.indexOf(AppDestination.SettingsList)
+            val nextStack = if (existingListIdx >= 0) {
+                state.backStack.take(existingListIdx + 1) + AppDestination.SettingsDetail(category)
+            } else {
+                val base = state.backStack
+                    .dropLastWhile {
+                        it is AppDestination.Onboarding ||
+                            it is AppDestination.SettingsDetail ||
+                            it is AppDestination.SettingsList
+                    }
+                    .ifEmpty { listOf(AppDestination.Hub) }
+                base + AppDestination.SettingsList + AppDestination.SettingsDetail(category)
+            }
+            withBackStack(
+                state = state.copy(
+                    showSlashMenu = false,
+                    showMentionMenu = false,
+                    showModelPickerSheet = false,
+                    showComposerToolsSheet = false,
+                    showQuotaSheet = false,
+                    isOverviewSheetVisible = false,
+                ),
+                rawStack = nextStack,
             )
         }
         if (category == SettingsCategory.ACCOUNTS_QUOTA) {
@@ -1309,16 +1684,47 @@ class WorkspaceViewModel @Inject constructor(
         }
     }
 
+    private fun handleOpenSettings(category: SettingsCategory) {
+        handleOpenSettingsDetail(category)
+    }
+
+    private fun handleCloseSettings() {
+        _uiState.update { state ->
+            val base = state.backStack
+                .dropLastWhile {
+                    it is AppDestination.Onboarding ||
+                        it is AppDestination.SettingsDetail ||
+                        it is AppDestination.SettingsList
+                }
+                .ifEmpty { listOf(AppDestination.Hub) }
+            withBackStack(state, base)
+        }
+    }
+
     private fun handleSelectSettingsCategory(category: SettingsCategory) {
-        _uiState.update { it.copy(selectedSettingsCategory = category) }
+        _uiState.update { state ->
+            val nextStack = when (state.currentDestination) {
+                is AppDestination.SettingsDetail -> {
+                    state.backStack.dropLast(1) + AppDestination.SettingsDetail(category)
+                }
+
+                AppDestination.SettingsList -> {
+                    state.backStack + AppDestination.SettingsDetail(category)
+                }
+
+                else -> state.backStack
+            }
+            withBackStack(
+                state = state.copy(selectedSettingsCategory = category),
+                rawStack = nextStack,
+            )
+        }
         if (category == SettingsCategory.ACCOUNTS_QUOTA) {
             maybeAutoRefreshActiveProfileQuota()
         }
     }
 
-    private fun handleUpdateSettings(
-        transform: (com.antigravity.mobile.feature.workspace.model.AppSettings) -> com.antigravity.mobile.feature.workspace.model.AppSettings,
-    ) {
+    private fun handleUpdateSettings(transform: (AppSettings) -> AppSettings) {
         _uiState.update { state ->
             state.copy(settings = transform(state.settings))
         }
@@ -1330,14 +1736,109 @@ class WorkspaceViewModel @Inject constructor(
         maybeAutoRefreshActiveProfileQuota()
     }
 
-    private fun handleDismissOnboarding() {
+    private fun handleOpenOnboardingFromSettings(fromSettings: Boolean) {
         _uiState.update { state ->
-            state.copy(
-                showOnboarding = false,
-                showSettings = if (state.onboardingReturnToSettings) true else state.showSettings,
-                onboardingReturnToSettings = false,
+            val nextStack = if (fromSettings) {
+                when (state.currentDestination) {
+                    is AppDestination.SettingsDetail, AppDestination.SettingsList -> {
+                        state.backStack + AppDestination.Onboarding
+                    }
+
+                    AppDestination.Onboarding -> state.backStack
+                    else -> {
+                        val base = state.backStack.ifEmpty { listOf(AppDestination.Hub) }
+                        base + AppDestination.SettingsList +
+                            AppDestination.SettingsDetail(SettingsCategory.MOBILE_ROOT) +
+                            AppDestination.Onboarding
+                    }
+                }
+            } else {
+                val base = state.backStack
+                    .dropLastWhile { it is AppDestination.Onboarding }
+                    .ifEmpty { listOf(AppDestination.Hub) }
+                base + AppDestination.Onboarding
+            }
+            withBackStack(
+                state = state.copy(
+                    showSlashMenu = false,
+                    showMentionMenu = false,
+                    showModelPickerSheet = false,
+                    showComposerToolsSheet = false,
+                    showQuotaSheet = false,
+                    isOverviewSheetVisible = false,
+                ),
+                rawStack = nextStack,
             )
         }
+    }
+
+    private fun handleSetShowOnboarding(show: Boolean) {
+        _uiState.update { state ->
+            val nextStack = if (show) {
+                if (state.currentDestination is AppDestination.Onboarding) {
+                    state.backStack
+                } else {
+                    state.backStack + AppDestination.Onboarding
+                }
+            } else {
+                state.backStack.filterNot { it is AppDestination.Onboarding }.ifEmpty { listOf(AppDestination.Hub) }
+            }
+            withBackStack(state, nextStack)
+        }
+    }
+
+    private fun handleDismissOnboarding() {
+        _uiState.update { state ->
+            val nextStack = if (state.currentDestination is AppDestination.Onboarding && state.backStack.size > 1) {
+                state.backStack.dropLast(1)
+            } else {
+                state.backStack.filterNot { it is AppDestination.Onboarding }.ifEmpty { listOf(AppDestination.Hub) }
+            }
+            withBackStack(state, nextStack)
+        }
+    }
+
+    private fun handleCompleteOnboarding() {
+        _uiState.update { state ->
+            val nextStack = if (state.currentDestination is AppDestination.Onboarding && state.backStack.size > 1) {
+                state.backStack.dropLast(1)
+            } else {
+                state.backStack.filterNot { it is AppDestination.Onboarding }.ifEmpty { listOf(AppDestination.Hub) }
+            }
+            withBackStack(
+                state = state.copy(onboarding = state.onboarding.copy(isCompleted = true)),
+                rawStack = nextStack,
+            )
+        }
+    }
+
+    private fun withBackStack(
+        state: WorkspaceUiState,
+        rawStack: List<AppDestination>,
+        clearExitConfirm: Boolean = true,
+    ): WorkspaceUiState {
+        val normalized = if (rawStack.isEmpty()) listOf(AppDestination.Hub) else rawStack
+        val top = normalized.last()
+        val previous = normalized.dropLast(1).lastOrNull()
+        val isSettingsTop = top is AppDestination.SettingsList || top is AppDestination.SettingsDetail
+        val isOnboardingTop = top is AppDestination.Onboarding
+        val nextCategory = (top as? AppDestination.SettingsDetail)?.category
+            ?: state.selectedSettingsCategory
+        val returnToSettings = isOnboardingTop &&
+            (previous is AppDestination.SettingsList || previous is AppDestination.SettingsDetail)
+        if (clearExitConfirm) {
+            lastRootBackPressEpochMs = 0L
+        }
+        return state.copy(
+            backStack = normalized,
+            showSettings = isSettingsTop,
+            showOnboarding = isOnboardingTop,
+            selectedSettingsCategory = nextCategory,
+            onboardingReturnToSettings = returnToSettings,
+            exitConfirmPending = if (clearExitConfirm) false else state.exitConfirmPending,
+            exitConfirmMessage = if (clearExitConfirm) null else state.exitConfirmMessage,
+            shouldExitApp = if (clearExitConfirm) false else state.shouldExitApp,
+        )
     }
 
     private fun maybeAutoRefreshActiveProfileQuota(state: WorkspaceUiState = _uiState.value) {
@@ -1419,7 +1920,10 @@ class WorkspaceViewModel @Inject constructor(
                         quotaWarning = if (state.quotaWarning?.currentProfile?.id == profileId) null else state.quotaWarning,
                     )
                 }
-                appendSystemMessage("Google profili silindi.")
+                appendSystemMessage(
+                    content = "Google profili silindi.",
+                    onlyIfConversationActive = true,
+                )
             }.onFailure { error ->
                 _uiState.update { it.copy(errorMessage = error.message ?: "Profil silinemedi") }
             }
@@ -1498,7 +2002,7 @@ class WorkspaceViewModel @Inject constructor(
             name = action.name.ifBlank { action.prompt.take(32) },
             prompt = action.prompt,
             profileId = profileId,
-            projectId = _uiState.value.activeProject.id,
+            projectId = _uiState.value.selectedProjectId,
             cronExpression = action.cronExpression,
             triggerAtEpochMs = action.triggerAtEpochMs ?: if (action.cronExpression == null) {
                 System.currentTimeMillis() + 60_000L
@@ -1750,48 +2254,46 @@ class WorkspaceViewModel @Inject constructor(
             val snapshot = runSuspendCatching { localStore.load() }.getOrNull()
             _uiState.update { state ->
                 if (snapshot != null) {
-                    val restoredProjects = snapshot.projects.ifEmpty { state.projects }
-                    val restoredActiveProject = snapshot.activeProjectId
-                        ?.let { id -> restoredProjects.firstOrNull { it.id == id } }
-                        ?: restoredProjects.first()
+                    val restoredProjects = snapshot.projects
+                    val restoredSelectedProjectId = snapshot.activeProjectId
+                        ?.takeIf { id -> restoredProjects.any { it.id == id } }
+                        ?: restoredProjects.firstOrNull()?.id
                     val validProjectIds = restoredProjects.map { it.id }.toSet()
-                    val restoredConversations = snapshot.conversations.filter { it.projectId in validProjectIds }
+                    val restoredConversations = snapshot.conversations.filter { conv ->
+                        conv.projectId in validProjectIds ||
+                            (restoredProjects.isEmpty() && conv.projectId == DEVICE_FALLBACK_PROJECT.id)
+                    }
                     val activeConv = snapshot.activeConversationId
                         ?.let { id -> restoredConversations.firstOrNull { it.id == id } }
-                        ?: restoredConversations
-                            .filter { it.projectId == restoredActiveProject.id }
-                            .maxByOrNull { it.updatedAtEpochMs }
-                        ?: newEmptyConversation(restoredActiveProject.id)
-                    val finalConversations = if (restoredConversations.any { it.id == activeConv.id }) {
-                        restoredConversations
+                    val hydratedMessages = if (state.messages.isNotEmpty()) {
+                        state.messages
                     } else {
-                        listOf(activeConv) + restoredConversations
+                        activeConv?.messages.orEmpty()
                     }
-                    val hydratedMessages = if (state.messages.isNotEmpty()) state.messages else activeConv.messages
+                    val selectedProjectObj = restoredProjects.firstOrNull { it.id == restoredSelectedProjectId }
+                    val updatedConversations = if (activeConv != null) {
+                        restoredConversations.map { conv ->
+                            if (conv.id == activeConv.id) conv.copy(messages = hydratedMessages) else conv
+                        }
+                    } else {
+                        restoredConversations
+                    }
                     state.copy(
                         projects = restoredProjects,
-                        activeProject = restoredActiveProject,
-                        conversations = finalConversations.map { conv ->
-                            if (conv.id == activeConv.id) conv.copy(messages = hydratedMessages) else conv
-                        },
-                        activeConversationId = activeConv.id,
-                        expandedProjectIds = state.expandedProjectIds + restoredActiveProject.id,
+                        selectedProjectId = restoredSelectedProjectId,
+                        conversations = updatedConversations,
+                        activeConversationId = activeConv?.id,
+                        expandedProjectIds = restoredSelectedProjectId?.let { setOf(it) } ?: emptySet(),
                         messages = hydratedMessages,
                         settings = snapshot.settings,
-                        mentionSuggestions = buildMentionSuggestions(restoredActiveProject),
-                    )
-                } else if (state.conversations.isEmpty()) {
-                    val initialConv = newEmptyConversation(
-                        projectId = state.activeProject.id,
-                        messages = state.messages,
-                    )
-                    state.copy(
-                        conversations = listOf(initialConv),
-                        activeConversationId = initialConv.id,
-                        expandedProjectIds = state.expandedProjectIds + state.activeProject.id,
+                        mentionSuggestions = buildMentionSuggestions(selectedProjectObj),
                     )
                 } else {
-                    state
+                    // First-ever launch (no snapshot file yet): keep the starter project without
+                    // creating phantom empty conversations.
+                    state.copy(
+                        mentionSuggestions = buildMentionSuggestions(state.selectedProject),
+                    )
                 }
             }
 
@@ -1806,9 +2308,10 @@ class WorkspaceViewModel @Inject constructor(
         val snapshot = WorkspaceSnapshot(
             projects = state.projects,
             conversations = state.conversations,
-            activeProjectId = state.activeProject.id,
+            activeProjectId = state.selectedProjectId,
             activeConversationId = state.activeConversationId,
             settings = state.settings,
+            workspaceInitialized = true,
         )
         viewModelScope.launch {
             runSuspendCatching {
@@ -1822,7 +2325,7 @@ class WorkspaceViewModel @Inject constructor(
         title: String = WorkspaceConversation.DEFAULT_TITLE,
         messages: List<WorkspaceChatMessage> = emptyList(),
     ): WorkspaceConversation {
-        val now = System.currentTimeMillis()
+        val now = clockMs()
         return WorkspaceConversation(
             id = "conv-${UUID.randomUUID().toString().take(8)}",
             projectId = projectId,
@@ -1840,7 +2343,7 @@ class WorkspaceViewModel @Inject constructor(
         sessionId: String? = state.activeSession?.sessionId,
         userPromptForAutoTitle: String? = null,
     ): WorkspaceUiState {
-        val now = System.currentTimeMillis()
+        val now = clockMs()
         val existing = state.activeConversation
         if (existing != null) {
             val nextTitle = if (userPromptForAutoTitle != null &&
@@ -1869,7 +2372,7 @@ class WorkspaceViewModel @Inject constructor(
             ?: WorkspaceConversation.DEFAULT_TITLE
         val created = WorkspaceConversation(
             id = "conv-${UUID.randomUUID().toString().take(8)}",
-            projectId = state.activeProject.id,
+            projectId = state.selectedProjectId ?: state.activeProject.id,
             title = initialTitle,
             sessionId = sessionId,
             messages = newMessages,
@@ -1877,10 +2380,20 @@ class WorkspaceViewModel @Inject constructor(
             createdAtEpochMs = now,
             updatedAtEpochMs = now,
         )
-        return state.copy(
-            messages = newMessages,
-            conversations = listOf(created) + state.conversations,
-            activeConversationId = created.id,
+        val currentDest = state.currentDestination
+        val nextStack = if (currentDest is AppDestination.Conversation && currentDest.conversationId == null) {
+            state.backStack.dropLast(1) + AppDestination.Conversation(created.id)
+        } else {
+            state.backStack
+        }
+        return withBackStack(
+            state = state.copy(
+                messages = newMessages,
+                conversations = listOf(created) + state.conversations,
+                activeConversationId = created.id,
+            ),
+            rawStack = nextStack,
+            clearExitConfirm = false,
         )
     }
 
@@ -1890,15 +2403,25 @@ class WorkspaceViewModel @Inject constructor(
         return if (normalized.length <= 42) normalized else "${normalized.take(41).trimEnd()}…"
     }
 
-    private fun appendSystemMessage(content: String) {
+    private fun appendSystemMessage(
+        content: String,
+        onlyIfConversationActive: Boolean = false,
+    ) {
+        var didModify = false
         _uiState.update { state ->
+            if (onlyIfConversationActive && state.activeConversation == null) {
+                return@update state
+            }
+            didModify = true
             val updatedMessages = state.messages + systemMessage(
                 sessionId = currentSessionId(state),
                 content = content,
             )
             syncActiveConversation(state, updatedMessages)
         }
-        persistSnapshot()
+        if (didModify) {
+            persistSnapshot()
+        }
     }
 
     private fun systemMessage(sessionId: String, content: String) = WorkspaceChatMessage(
@@ -1906,7 +2429,7 @@ class WorkspaceViewModel @Inject constructor(
         sessionId = sessionId,
         role = ChatMessageRole.SYSTEM,
         content = content,
-        timestampEpochMs = System.currentTimeMillis(),
+        timestampEpochMs = clockMs(),
         isStreaming = false,
     )
 
@@ -1935,7 +2458,7 @@ class WorkspaceViewModel @Inject constructor(
             sessionId = sessionId,
             role = ChatMessageRole.ASSISTANT,
             content = "",
-            timestampEpochMs = System.currentTimeMillis(),
+            timestampEpochMs = clockMs(),
             isStreaming = true,
         )
         return messages + transform(fresh)
@@ -1961,14 +2484,16 @@ class WorkspaceViewModel @Inject constructor(
         )
     }
 
-    private fun buildMentionSuggestions(project: WorkspaceProject) =
-        listOf(
-            com.antigravity.mobile.feature.workspace.model.MentionSuggestion(
+    private fun buildMentionSuggestions(project: WorkspaceProject?): List<MentionSuggestion> {
+        if (project == null) return defaultMentions()
+        return listOf(
+            MentionSuggestion(
                 token = "@project:${project.rootPath}",
                 label = project.name,
                 category = "Proje",
             ),
         ) + defaultMentions()
+    }
 
     /**
      * Cancellation-safe wrapper adhering to `compose-concurrency.md`:
@@ -1982,5 +2507,17 @@ class WorkspaceViewModel @Inject constructor(
         } catch (t: Throwable) {
             Result.failure(t)
         }
+    }
+
+    companion object {
+        internal const val EXIT_CONFIRM_WINDOW_MS = 2_000L
+        internal const val EXIT_CONFIRM_MESSAGE = "Uygulamadan çıkmak için tekrar geri tuşuna basın"
+
+        private val NON_REUSABLE_SESSION_STATES = setOf(
+            AcpSessionState.ERROR,
+            AcpSessionState.AWAITING_AUTH,
+            AcpSessionState.DISCONNECTED,
+            AcpSessionState.CLOSED,
+        )
     }
 }

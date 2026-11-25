@@ -55,7 +55,18 @@ sealed interface WorkspaceAction {
     data class RenameConversation(val conversationId: String, val newTitle: String) : WorkspaceAction
     data class TogglePinConversation(val conversationId: String) : WorkspaceAction
 
-    // Navigation / Settings / Quota
+    // Navigation / Back-Stack / Sheets / Settings / Quota
+    data object NavigateBack : WorkspaceAction
+    data object NavigateToHub : WorkspaceAction
+    data class NavigateToConversation(val conversationId: String? = null) : WorkspaceAction
+    data object OpenSettingsList : WorkspaceAction
+    data class OpenSettingsDetail(val category: SettingsCategory) : WorkspaceAction
+    data object OpenModelPickerSheet : WorkspaceAction
+    data object CloseModelPickerSheet : WorkspaceAction
+    data object OpenComposerToolsSheet : WorkspaceAction
+    data object CloseComposerToolsSheet : WorkspaceAction
+    data object ConsumeExitApp : WorkspaceAction
+    data object DismissExitConfirm : WorkspaceAction
     data class OpenSettings(val category: SettingsCategory = SettingsCategory.GENERAL) : WorkspaceAction
     data object CloseSettings : WorkspaceAction
     data class SelectSettingsCategory(val category: SettingsCategory) : WorkspaceAction
