@@ -1176,4 +1176,87 @@ class WorkspaceViewModelTest {
         assertEquals("sess-post-auth", mismatchSlot.captured.resumeConversationId)
         coVerify { acpClient.sendMessage("sess-post-auth", "Mevcut sohbet oturumuna dön", emptyList()) }
     }
+
+    @Test
+    fun `permission request shows card when fullAccessEnabled is false`() = runTest {
+        advanceUntilIdle()
+
+        val request = AcpEvent.PermissionRequest(
+            sessionId = "sess-1",
+            requestId = "perm-ask-1",
+            toolName = "ls -la /mnt/sdcard\nuname -a",
+            riskLevel = McpToolRisk.HIGH,
+            description = "Run shell inspection",
+            argumentsJson = """{"cmd":"uname -a"}""",
+        )
+        acpEventsFlow.emit(request)
+        advanceUntilIdle()
+
+        assertEquals(request, viewModel.uiState.value.pendingPermissionRequest)
+        assertEquals(0, viewModel.uiState.value.autoApprovedToolCount)
+        coVerify(exactly = 0) { acpClient.respondToPermission(any()) }
+    }
+
+    @Test
+    fun `permission request auto-approves with rememberForSession when fullAccessEnabled is true`() = runTest {
+        advanceUntilIdle()
+
+        viewModel.onAction(WorkspaceAction.UpdateSettings { it.copy(fullAccessEnabled = true) })
+        advanceUntilIdle()
+
+        val request = AcpEvent.PermissionRequest(
+            sessionId = "sess-1",
+            requestId = "perm-auto-1",
+            toolName = "bash",
+            riskLevel = McpToolRisk.CRITICAL,
+            description = "Analyze device state",
+            argumentsJson = """{"cmd":"free -h"}""",
+        )
+        acpEventsFlow.emit(request)
+        advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.pendingPermissionRequest)
+        assertEquals(1, viewModel.uiState.value.autoApprovedToolCount)
+        coVerify(exactly = 1) {
+            acpClient.respondToPermission(
+                PermissionResponse(
+                    requestId = "perm-auto-1",
+                    approved = true,
+                    rememberForSession = true,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `enabling fullAccessEnabled while permission is pending auto-approves it immediately`() = runTest {
+        advanceUntilIdle()
+
+        val pending = AcpEvent.PermissionRequest(
+            sessionId = "sess-1",
+            requestId = "perm-pending-1",
+            toolName = "echo test",
+            riskLevel = McpToolRisk.MEDIUM,
+            description = "Pending tool call",
+        )
+        acpEventsFlow.emit(pending)
+        advanceUntilIdle()
+        assertEquals(pending, viewModel.uiState.value.pendingPermissionRequest)
+
+        viewModel.onAction(WorkspaceAction.UpdateSettings { it.copy(fullAccessEnabled = true) })
+        advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.pendingPermissionRequest)
+        assertTrue(viewModel.uiState.value.settings.fullAccessEnabled)
+        assertEquals(1, viewModel.uiState.value.autoApprovedToolCount)
+        coVerify(exactly = 1) {
+            acpClient.respondToPermission(
+                PermissionResponse(
+                    requestId = "perm-pending-1",
+                    approved = true,
+                    rememberForSession = true,
+                ),
+            )
+        }
+    }
 }

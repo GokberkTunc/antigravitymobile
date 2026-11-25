@@ -514,8 +514,18 @@ class WorkspaceViewModel @Inject constructor(
             }
 
             is AcpEvent.PermissionRequest -> {
-                _uiState.update { state ->
-                    state.copy(pendingPermissionRequest = event)
+                if (_uiState.value.settings.fullAccessEnabled) {
+                    _uiState.update { state ->
+                        state.copy(
+                            pendingPermissionRequest = null,
+                            autoApprovedToolCount = state.autoApprovedToolCount + 1,
+                        )
+                    }
+                    autoApprovePermission(event)
+                } else {
+                    _uiState.update { state ->
+                        state.copy(pendingPermissionRequest = event)
+                    }
                 }
             }
 
@@ -1725,9 +1735,24 @@ class WorkspaceViewModel @Inject constructor(
     }
 
     private fun handleUpdateSettings(transform: (AppSettings) -> AppSettings) {
+        var pendingToApprove: AcpEvent.PermissionRequest? = null
         _uiState.update { state ->
-            state.copy(settings = transform(state.settings))
+            val updated = transform(state.settings)
+            val shouldAutoApprove = updated.fullAccessEnabled && state.pendingPermissionRequest != null
+            if (shouldAutoApprove) {
+                pendingToApprove = state.pendingPermissionRequest
+            }
+            state.copy(
+                settings = updated,
+                pendingPermissionRequest = if (shouldAutoApprove) null else state.pendingPermissionRequest,
+                autoApprovedToolCount = if (shouldAutoApprove) {
+                    state.autoApprovedToolCount + 1
+                } else {
+                    state.autoApprovedToolCount
+                },
+            )
         }
+        pendingToApprove?.let { autoApprovePermission(it) }
         persistSnapshot()
     }
 
@@ -1956,6 +1981,26 @@ class WorkspaceViewModel @Inject constructor(
                             isBusy = false,
                             errorMessage = msg,
                         ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun autoApprovePermission(request: AcpEvent.PermissionRequest) {
+        val response = PermissionResponse(
+            requestId = request.requestId,
+            approved = true,
+            rememberForSession = true,
+        )
+        viewModelScope.launch {
+            runSuspendCatching {
+                acpClient.respondToPermission(response).getOrThrow()
+            }.onFailure { error ->
+                _uiState.update { state ->
+                    state.copy(
+                        pendingPermissionRequest = state.pendingPermissionRequest ?: request,
+                        errorMessage = error.message ?: "Otomatik izin yanıtı iletilemedi",
                     )
                 }
             }

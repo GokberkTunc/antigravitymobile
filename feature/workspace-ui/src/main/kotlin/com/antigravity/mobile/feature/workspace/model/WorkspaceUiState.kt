@@ -155,6 +155,7 @@ data class WorkspaceUiState(
     val artifacts: List<WorkspaceArtifact> = emptyList(),
     val diffs: List<DiffItem> = emptyList(),
     val pendingPermissionRequest: AcpEvent.PermissionRequest? = null,
+    val autoApprovedToolCount: Int = 0,
     val authBanner: AuthBannerState? = null,
     val quotaWarning: QuotaWarningState? = null,
     val pendingChromeCustomTabUrl: String? = null,

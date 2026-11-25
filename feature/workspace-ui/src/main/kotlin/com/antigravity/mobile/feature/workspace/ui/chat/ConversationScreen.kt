@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -85,6 +86,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -114,6 +116,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -141,12 +144,14 @@ import com.antigravity.mobile.feature.workspace.model.InterfaceLayoutMode
 import com.antigravity.mobile.feature.workspace.model.OverviewTab
 import com.antigravity.mobile.feature.workspace.model.QuotaBucketParser
 import com.antigravity.mobile.feature.workspace.model.QuotaWarningState
+import com.antigravity.mobile.feature.workspace.model.SettingsCategory
 import com.antigravity.mobile.feature.workspace.model.SlashCommand
 import com.antigravity.mobile.feature.workspace.model.WorkspaceAction
 import com.antigravity.mobile.feature.workspace.model.WorkspaceUiState
 import com.antigravity.mobile.feature.workspace.model.defaultMentions
 import com.antigravity.mobile.feature.workspace.theme.AntigravityExtendedColors
 import com.antigravity.mobile.feature.workspace.theme.LocalAntigravityColors
+import com.antigravity.mobile.feature.workspace.ui.settings.FullAccessConfirmationDialog
 import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
@@ -166,6 +171,8 @@ fun ConversationScreen(
     val ext = LocalAntigravityColors.current
     val listState = rememberLazyListState()
     var showAttachmentDialog by remember { mutableStateOf(false) }
+    var showFullAccessDialog by remember { mutableStateOf(false) }
+    val permissionCardMaxHeight = (LocalConfiguration.current.screenHeightDp * 0.5f).dp
 
     val lastMessage = state.messages.lastOrNull()
     LaunchedEffect(
@@ -244,6 +251,39 @@ fun ConversationScreen(
                         }
                     },
                     actions = {
+                        if (state.settings.fullAccessEnabled) {
+                            Surface(
+                                onClick = {
+                                    onAction(
+                                        WorkspaceAction.OpenSettingsDetail(SettingsCategory.PROJECTS_PERMISSIONS),
+                                    )
+                                },
+                                shape = CircleShape,
+                                color = ext.critical.copy(alpha = if (ext.isDark) 0.18f else 0.12f),
+                                border = BorderStroke(1.dp, ext.critical.copy(alpha = 0.45f)),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Shield,
+                                        contentDescription = null,
+                                        tint = ext.critical,
+                                        modifier = Modifier.size(12.dp),
+                                    )
+                                    Text(
+                                        text = "Tam Yetki",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = ext.critical,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
                         TopBarQuotaPill(
                             fiveHourPercent = fiveHourPercent,
                             isRefreshing = state.isRefreshingQuota,
@@ -296,6 +336,7 @@ fun ConversationScreen(
             WorkspaceComposer(
                 state = state,
                 onAction = onAction,
+                onRequestEnableFullAccess = { showFullAccessDialog = true },
             )
         },
     ) { innerPadding ->
@@ -344,30 +385,6 @@ fun ConversationScreen(
                 )
             }
 
-            // Inline ACP Permission Request Card
-            state.pendingPermissionRequest?.let { req ->
-                InlinePermissionCard(
-                    request = req,
-                    onApprove = { remember ->
-                        onAction(
-                            WorkspaceAction.RespondToPermission(
-                                requestId = req.requestId,
-                                approved = true,
-                                rememberForSession = remember,
-                            ),
-                        )
-                    },
-                    onDeny = {
-                        onAction(
-                            WorkspaceAction.RespondToPermission(
-                                requestId = req.requestId,
-                                approved = false,
-                            ),
-                        )
-                    },
-                )
-            }
-
             // Editorial Empty Draft Canvas or Streaming Conversation Thread
             if (state.messages.isEmpty()) {
                 EmptyWorkspaceWelcome(
@@ -398,6 +415,32 @@ fun ConversationScreen(
                     }
                 }
             }
+
+            // Inline ACP Permission Request Card (placed below the scrollable thread, capped to 50% screen)
+            state.pendingPermissionRequest?.let { req ->
+                InlinePermissionCard(
+                    request = req,
+                    onApprove = { remember ->
+                        onAction(
+                            WorkspaceAction.RespondToPermission(
+                                requestId = req.requestId,
+                                approved = true,
+                                rememberForSession = remember,
+                            ),
+                        )
+                    },
+                    onDeny = {
+                        onAction(
+                            WorkspaceAction.RespondToPermission(
+                                requestId = req.requestId,
+                                approved = false,
+                            ),
+                        )
+                    },
+                    onEnableFullAccess = { showFullAccessDialog = true },
+                    modifier = Modifier.heightIn(max = permissionCardMaxHeight),
+                )
+            }
         }
     }
 
@@ -426,6 +469,16 @@ fun ConversationScreen(
                 onAction(WorkspaceAction.AddAttachment(path))
                 showAttachmentDialog = false
             },
+        )
+    }
+
+    if (showFullAccessDialog) {
+        FullAccessConfirmationDialog(
+            onConfirm = {
+                showFullAccessDialog = false
+                onAction(WorkspaceAction.UpdateSettings { it.copy(fullAccessEnabled = true) })
+            },
+            onDismiss = { showFullAccessDialog = false },
         )
     }
 }
@@ -786,31 +839,67 @@ private fun QuotaNearLimitBanner(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun InlinePermissionCard(
     request: AcpEvent.PermissionRequest,
     onApprove: (remember: Boolean) -> Unit,
     onDeny: () -> Unit,
+    onEnableFullAccess: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val ext = LocalAntigravityColors.current
+    var expanded by remember(request.requestId) { mutableStateOf(false) }
+
+    val shortToolLabel = remember(request.toolName) {
+        request.toolName.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.isNotEmpty() }
+            ?: "Araç"
+    }
+    val detailPayload = remember(request) {
+        buildString {
+            val trimmedTool = request.toolName.trim()
+            val showFullTool = trimmedTool.contains('\n') || trimmedTool.length > 60
+            if (showFullTool) {
+                append(trimmedTool)
+            }
+            val desc = request.description.trim()
+            if (desc.isNotEmpty() && desc != trimmedTool) {
+                if (isNotEmpty()) append("\n\n")
+                append(desc)
+            }
+            val args = request.argumentsJson.trim()
+            if (args.isNotEmpty() && args != "{}") {
+                if (isNotEmpty()) append("\n\n")
+                append(args)
+            }
+        }
+    }
+    val isLongPayload = detailPayload.length > 220 || detailPayload.count { it == '\n' } > 5
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, ext.warning.copy(alpha = 0.55f)),
+        border = BorderStroke(1.dp, ext.warning.copy(alpha = 0.6f)),
         shape = RoundedCornerShape(16.dp),
-        shadowElevation = if (ext.isDark) 0.dp else 1.dp,
-        modifier = Modifier
+        shadowElevation = if (ext.isDark) 0.dp else 2.dp,
+        modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 14.dp, vertical = 6.dp),
     ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // Fixed single-line header + short tool summary + Risk badge
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Surface(
                     shape = CircleShape,
-                    color = ext.warning.copy(alpha = 0.14f),
+                    color = ext.warning.copy(alpha = if (ext.isDark) 0.16f else 0.12f),
                     modifier = Modifier.size(32.dp),
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -824,63 +913,135 @@ private fun InlinePermissionCard(
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Araç İzni • ${request.toolName}",
+                        text = "Araç izni gerekiyor",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = "Risk: ${request.riskLevel.name}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = ext.warning,
+                        text = shortToolLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-            }
-            Text(
-                text = request.description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (request.argumentsJson.isNotBlank() && request.argumentsJson != "{}") {
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = ext.codeBlockBackground,
-                    border = BorderStroke(1.dp, ext.cardBorder),
-                    modifier = Modifier.fillMaxWidth(),
+                    shape = CircleShape,
+                    color = ext.warning.copy(alpha = if (ext.isDark) 0.18f else 0.12f),
+                    border = BorderStroke(1.dp, ext.warning.copy(alpha = 0.4f)),
                 ) {
                     Text(
-                        text = request.argumentsJson,
+                        text = request.riskLevel.name,
                         style = MaterialTheme.typography.labelSmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(10.dp),
+                        fontWeight = FontWeight.SemiBold,
+                        color = ext.warning,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                     )
                 }
             }
-            Row(
+
+            // Scrollable monospace details box (never clipped / never pushes buttons off-screen)
+            if (detailPayload.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = ext.codeBlockBackground,
+                        border = BorderStroke(1.dp, ext.cardBorder),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = if (expanded) 220.dp else 140.dp)
+                                .verticalScroll(rememberScrollState())
+                                .padding(10.dp),
+                        ) {
+                            Text(
+                                text = detailPayload,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (isLongPayload) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            Text(
+                                text = if (expanded) "Daralt" else "Tamamını Gör / Genişlet",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { expanded = !expanded }
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Always-visible action buttons
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 OutlinedButton(
                     onClick = onDeny,
-                    modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(1.dp, ext.critical.copy(alpha = 0.6f)),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                 ) {
                     Text("Reddet", color = ext.critical, fontWeight = FontWeight.Medium)
                 }
                 Button(
                     onClick = { onApprove(false) },
-                    modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.tertiary,
                         contentColor = MaterialTheme.colorScheme.onTertiary,
                     ),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                 ) {
-                    Text("İzin Ver", fontWeight = FontWeight.SemiBold)
+                    Text("Bir kez izin ver", fontWeight = FontWeight.SemiBold)
+                }
+                FilledTonalButton(
+                    onClick = { onApprove(true) },
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                ) {
+                    Text("Oturum boyunca izin ver", fontWeight = FontWeight.Medium)
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(
+                    onClick = onEnableFullAccess,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Shield,
+                        contentDescription = null,
+                        tint = ext.critical,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = "Bir daha sorma (Tam Yetki)",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = ext.critical,
+                    )
                 }
             }
         }
@@ -1976,6 +2137,7 @@ private fun permissionModeSubtitle(mode: PermissionMode): String = when (mode) {
 private fun WorkspaceComposer(
     state: WorkspaceUiState,
     onAction: (WorkspaceAction) -> Unit,
+    onRequestEnableFullAccess: () -> Unit,
 ) {
     val ext = LocalAntigravityColors.current
     var showModeMenu by remember { mutableStateOf(false) }
@@ -2366,29 +2528,46 @@ private fun WorkspaceComposer(
                         }
                     }
 
-                    // 3. Permission Mode Pill (Auto / Ask / Plan)
+                    // 3. Permission Mode Pill (Auto / Ask / Plan / Tam Yetki)
+                    val fullAccess = state.settings.fullAccessEnabled
                     Box {
                         Surface(
                             onClick = { showModeMenu = true },
                             shape = CircleShape,
-                            color = MaterialTheme.colorScheme.surfaceContainer,
-                            border = BorderStroke(1.dp, ext.cardBorder),
+                            color = if (fullAccess) {
+                                ext.critical.copy(alpha = if (ext.isDark) 0.18f else 0.11f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainer
+                            },
+                            border = BorderStroke(
+                                1.dp,
+                                if (fullAccess) ext.critical.copy(alpha = 0.55f) else ext.cardBorder,
+                            ),
                         ) {
                             Row(
                                 modifier = Modifier.padding(start = 10.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(3.dp),
                             ) {
+                                if (fullAccess) {
+                                    Icon(
+                                        imageVector = Icons.Default.Shield,
+                                        contentDescription = null,
+                                        tint = ext.critical,
+                                        modifier = Modifier.size(12.dp),
+                                    )
+                                }
                                 Text(
-                                    text = permissionModeLabel(state.permissionMode),
+                                    text = if (fullAccess) "Tam Yetki" else permissionModeLabel(state.permissionMode),
                                     style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.5.sp),
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = if (fullAccess) FontWeight.SemiBold else FontWeight.Medium,
+                                    color = if (fullAccess) ext.critical else MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1,
                                 )
                                 Icon(
                                     imageVector = Icons.Default.KeyboardArrowDown,
                                     contentDescription = "İzin modu",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    tint = if (fullAccess) ext.critical else MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(14.dp),
                                 )
                             }
@@ -2399,7 +2578,7 @@ private fun WorkspaceComposer(
                             containerColor = MaterialTheme.colorScheme.surface,
                         ) {
                             PermissionMode.entries.forEach { mode ->
-                                val isSelected = mode == state.permissionMode
+                                val isSelected = !fullAccess && mode == state.permissionMode
                                 DropdownMenuItem(
                                     text = {
                                         Column {
@@ -2433,11 +2612,59 @@ private fun WorkspaceComposer(
                                         null
                                     },
                                     onClick = {
+                                        if (fullAccess) {
+                                            onAction(WorkspaceAction.UpdateSettings { it.copy(fullAccessEnabled = false) })
+                                        }
                                         onAction(WorkspaceAction.SelectPermissionMode(mode))
                                         showModeMenu = false
                                     },
                                 )
                             }
+                            HorizontalDivider(
+                                modifier = Modifier.padding(vertical = 4.dp),
+                                color = ext.cardBorder.copy(alpha = 0.7f),
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(
+                                            text = "Tam Yetki (Onay Sorma)",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = if (fullAccess) FontWeight.Bold else FontWeight.SemiBold,
+                                            color = ext.critical,
+                                        )
+                                        Text(
+                                            text = if (fullAccess) {
+                                                "Etkin • Kapatmak için dokunun"
+                                            } else {
+                                                "dangerously-skip-permissions • Hiçbir aracı sorma"
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                                trailingIcon = if (fullAccess) {
+                                    {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            tint = ext.critical,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                                onClick = {
+                                    showModeMenu = false
+                                    if (fullAccess) {
+                                        onAction(WorkspaceAction.UpdateSettings { it.copy(fullAccessEnabled = false) })
+                                    } else {
+                                        onRequestEnableFullAccess()
+                                    }
+                                },
+                            )
                         }
                     }
 

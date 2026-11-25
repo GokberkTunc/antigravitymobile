@@ -121,7 +121,7 @@ class DefaultChrootManagerTest {
         coEvery { mountManager.mountAll(any(), any()) } returns Result.success(fullMounts)
         coEvery { rootExecutor.exec(match { it.contains("https://antigravity.google/cli/install.sh") }, any(), any()) } returns
             ShellResult(0, "Installed agy", "")
-        coEvery { rootExecutor.exec(match { it.startsWith("[ -x ") }, any(), any()) } returns
+        coEvery { rootExecutor.exec(match { it.contains("[ -x ") }, any(), any()) } returns
             ShellResult(0, "", "")
         coEvery { rootExecutor.exec(match { it.contains("--version") }, any(), any()) } returns
             ShellResult(0, "1.4.11\n", "")
@@ -147,7 +147,7 @@ class DefaultChrootManagerTest {
     fun `getAgyVersion returns null when binary is not installed`() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val rootExecutor = mockk<RootExecutor>()
-        coEvery { rootExecutor.exec(match { it.startsWith("[ -x ") }, any(), any()) } returns
+        coEvery { rootExecutor.exec(match { it.contains("[ -x ") }, any(), any()) } returns
             ShellResult(1, "", "")
 
         val manager = DefaultChrootManager(
@@ -160,6 +160,36 @@ class DefaultChrootManagerTest {
         val versionRes = manager.getAgyVersion()
         assertTrue(versionRes.isSuccess)
         assertNull(versionRes.getOrNull())
+    }
+
+    @Test
+    fun `getAgyVersion checks existence inside chroot for rootfs symlinks and passes HOME`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val rootExecutor = mockk<RootExecutor>()
+        val commands = mutableListOf<String>()
+
+        coEvery { rootExecutor.exec(any(), any(), any()) } answers {
+            val cmd = firstArg<String>()
+            commands += cmd
+            when {
+                cmd.contains("chroot ") && cmd.contains("[ -x ") -> ShellResult(0, "", "")
+                cmd.contains("--version") -> ShellResult(0, "1.5.17\n", "")
+                else -> ShellResult(1, "", "host symlink check disallowed")
+            }
+        }
+
+        val manager = DefaultChrootManager(
+            rootExecutor = rootExecutor,
+            rootfsInstaller = mockk(relaxed = true),
+            bindMountManager = mockk(relaxed = true),
+            ioDispatcher = dispatcher,
+        )
+
+        val versionRes = manager.getAgyVersion()
+        assertTrue(versionRes.isSuccess)
+        assertEquals("1.5.17", versionRes.getOrNull())
+        assertTrue(commands.any { it.contains("chroot ") && it.contains("[ -x ") })
+        assertTrue(commands.any { it.contains("HOME=/root") && it.contains("--version") })
     }
 
     @Test

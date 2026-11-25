@@ -35,6 +35,7 @@ data class AppSettings(
     val showThoughtBlocksExpanded: Boolean = false,
     val acpProcessPerSession: Boolean = true,
     val acpSandboxEnabled: Boolean = false,
+    val fullAccessEnabled: Boolean = false,
     val overlayOrbEnabled: Boolean = true,
     val overlayOpacity: Float = 0.92f,
     val hardwareKillSwitchEnabled: Boolean = true,

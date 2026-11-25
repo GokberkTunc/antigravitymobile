@@ -153,7 +153,8 @@ object SettingsSummaryFormatter {
         }
 
         SettingsCategory.PROJECTS_PERMISSIONS -> {
-            "${state.projects.size} proje • ${state.denylistPackages.size} korumalı uygulama"
+            val base = "${state.projects.size} proje • ${state.denylistPackages.size} korumalı uygulama"
+            if (state.settings.fullAccessEnabled) "$base • Tam Yetki Açık" else base
         }
 
         SettingsCategory.CUSTOMIZATIONS -> {
@@ -182,6 +183,61 @@ object SettingsSummaryFormatter {
             "$rootProvider • agy ${agyVersion ?: "—"} • Overlay & Kill-Switch"
         }
     }
+}
+
+/**
+ * Shared confirmation dialog before enabling Tam Yetki (dangerously-skip-permissions) mode.
+ */
+@Composable
+internal fun FullAccessConfirmationDialog(
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colorScheme.surface,
+        icon = {
+            Icon(
+                imageVector = Icons.Default.AdminPanelSettings,
+                contentDescription = null,
+                tint = extendedColors.critical,
+            )
+        },
+        title = {
+            Text(
+                text = "Tam Yetki Modu Etkinleştirilsin mi?",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = colorScheme.onSurface,
+            )
+        },
+        text = {
+            Text(
+                text = "Ajan; kabuk (shell), root, dosya ve sistem komutlarını size onay sormadan doğrudan çalıştıracaktır (dangerously-skip-permissions).\n\nSes+ / Ses- donanım Kill-Switch ve Acil Durdur butonu aktif kalmaya devam eder.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colorScheme.onSurfaceVariant,
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = extendedColors.critical,
+                    contentColor = Color.White,
+                ),
+                shape = RoundedCornerShape(10.dp),
+            ) {
+                Text("Etkinleştir", fontWeight = FontWeight.SemiBold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Vazgeç")
+            }
+        },
+    )
 }
 
 /**
@@ -1222,7 +1278,79 @@ private fun ProjectsPermissionsSettingsContent(
     var showAddProjectDialog by remember { mutableStateOf(false) }
     var projectToRename by remember { mutableStateOf<WorkspaceProject?>(null) }
     var projectToDelete by remember { mutableStateOf<WorkspaceProject?>(null) }
+    var showFullAccessDialog by remember { mutableStateOf(false) }
     var newPackageName by remember { mutableStateOf("") }
+
+    SettingsSectionCard(
+        title = "Tam Yetki Modu (Dangerously Skip Permissions)",
+        subtitle = "Açıldığında ajan kabuk, root, dosya ve sistem aracı çağrılarını onay penceresi göstermeden otomatik onaylar.",
+    ) {
+        val fullAccess = state.settings.fullAccessEnabled
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = if (fullAccess) {
+                extendedColors.critical.copy(alpha = if (extendedColors.isDark) 0.16f else 0.10f)
+            } else {
+                tileBackground
+            },
+            border = BorderStroke(
+                width = if (fullAccess) 1.25.dp else 1.dp,
+                color = if (fullAccess) extendedColors.critical.copy(alpha = 0.65f) else extendedColors.cardBorder,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AdminPanelSettings,
+                    contentDescription = null,
+                    tint = if (fullAccess) extendedColors.critical else colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp),
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = if (fullAccess) "Tam Yetki Etkin (Onay Sorma)" else "Tam Yetki Kapalı",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (fullAccess) extendedColors.critical else colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "Ses+ / Ses- donanım kill-switch ve sohbet Acil Durdur butonu her zaman aktif kalır.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = fullAccess,
+                    onCheckedChange = { wantEnable ->
+                        if (wantEnable) {
+                            showFullAccessDialog = true
+                        } else {
+                            onAction(WorkspaceAction.UpdateSettings { it.copy(fullAccessEnabled = false) })
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    if (showFullAccessDialog) {
+        FullAccessConfirmationDialog(
+            onConfirm = {
+                showFullAccessDialog = false
+                onAction(WorkspaceAction.UpdateSettings { it.copy(fullAccessEnabled = true) })
+            },
+            onDismiss = { showFullAccessDialog = false },
+        )
+    }
 
     SettingsSectionCard(
         title = "Projeler (Workspace)",

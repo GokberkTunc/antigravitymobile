@@ -290,15 +290,22 @@ class DefaultChrootManager(
     private suspend fun readAgyVersionInternal(): Result<String?> {
         return try {
             val qRootfs = PosixShellQuoting.quote(rootfsPath)
+            val qBinary = PosixShellQuoting.quote(agyBinaryPath)
             val qHostBinary = PosixShellQuoting.quote("$rootfsPath$agyBinaryPath")
-            val exists = rootExecutor.exec("[ -x $qHostBinary ]", timeoutMs = 5_000L)
+            val insideExistsCmd = PosixShellQuoting.quote("[ -x $qBinary ]")
+            // Check inside the chroot first so absolute symlinks (e.g. /usr/local/bin/agy ->
+            // /root/.local/bin/agy) resolve against rootfs instead of the Android host filesystem.
+            val exists = rootExecutor.exec(
+                command = "chroot $qRootfs /bin/sh -c $insideExistsCmd || [ -x $qHostBinary ]",
+                timeoutMs = 5_000L,
+            )
             if (!exists.isSuccess) {
                 return Result.success(null)
             }
 
-            val qBinary = PosixShellQuoting.quote(agyBinaryPath)
             val res = rootExecutor.exec(
-                command = "chroot $qRootfs /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin $qBinary --version",
+                command = "chroot $qRootfs /usr/bin/env -i HOME=/root " +
+                    "PATH=/usr/local/bin:/usr/bin:/bin:/root/.local/bin $qBinary --version",
                 timeoutMs = 15_000L,
             )
             if (!res.isSuccess) {
@@ -306,7 +313,7 @@ class DefaultChrootManager(
                     IOException("Failed to execute agy --version (exit=${res.exitCode}): ${res.stderr}"),
                 )
             }
-            Result.success(parseVersionOutput(res.stdout))
+            Result.success(parseVersionOutput(res.stdout.ifBlank { res.stderr }))
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {

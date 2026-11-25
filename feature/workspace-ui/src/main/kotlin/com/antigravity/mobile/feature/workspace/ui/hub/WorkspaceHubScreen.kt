@@ -48,6 +48,7 @@ import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -94,6 +95,7 @@ import com.antigravity.mobile.contracts.WorkspaceProject
 import com.antigravity.mobile.feature.workspace.model.QuotaBucketParser
 import com.antigravity.mobile.feature.workspace.model.QuotaBucketUi
 import com.antigravity.mobile.feature.workspace.model.QuotaWindowKind
+import com.antigravity.mobile.feature.workspace.model.SettingsCategory
 import com.antigravity.mobile.feature.workspace.model.WorkspaceAction
 import com.antigravity.mobile.feature.workspace.model.WorkspaceConversation
 import com.antigravity.mobile.feature.workspace.model.WorkspaceUiState
@@ -239,6 +241,39 @@ fun WorkspaceHubScreen(
                         }
                     },
                     actions = {
+                        if (state.settings.fullAccessEnabled) {
+                            Surface(
+                                onClick = {
+                                    onAction(
+                                        WorkspaceAction.OpenSettingsDetail(SettingsCategory.PROJECTS_PERMISSIONS),
+                                    )
+                                },
+                                shape = CircleShape,
+                                color = extColors.critical.copy(alpha = if (extColors.isDark) 0.18f else 0.12f),
+                                border = BorderStroke(1.dp, extColors.critical.copy(alpha = 0.45f)),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Shield,
+                                        contentDescription = null,
+                                        tint = extColors.critical,
+                                        modifier = Modifier.size(12.dp),
+                                    )
+                                    Text(
+                                        text = "Tam Yetki",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = extColors.critical,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
                         HubAccountActionButton(
                             activeProfile = state.activeProfile,
                             onClick = { onAction(WorkspaceAction.OpenQuotaSheet) },
