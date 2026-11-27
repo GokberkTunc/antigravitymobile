@@ -44,7 +44,9 @@ class AppSmokeAndManifestTest {
         }
     }
 
-    private fun resolveRepoRoot(): File = resolveAppDir().parentFile
+    private fun resolveRepoRoot(): File = checkNotNull(resolveAppDir().parentFile) {
+        "Unable to resolve repository root from ${resolveAppDir().absolutePath}"
+    }
 
     @Test
     fun `application id and build config match frozen design decision`() {
@@ -201,6 +203,22 @@ class AppSmokeAndManifestTest {
             OAuthIntentParseResult.AuthorizationCode(code = "LOOPBACK_456", state = "abc"),
             loopback,
         )
+
+        val officialHttps = OAuthCallbackIntentParser.parseUriString(
+            "https://antigravity.google/oauth-callback?code=4%2F0AfJohXmOfficialHttpsCode789&state=st42",
+        )
+        assertEquals(
+            OAuthIntentParseResult.AuthorizationCode(
+                code = "4/0AfJohXmOfficialHttpsCode789",
+                state = "st42",
+            ),
+            officialHttps,
+        )
+
+        val officialHttpsError = OAuthCallbackIntentParser.parseUriString(
+            "https://antigravity.google/oauth-callback?error=access_denied",
+        )
+        assertTrue(officialHttpsError is OAuthIntentParseResult.Error)
 
         val errorUri = OAuthCallbackIntentParser.parseUriString(
             "antigravity://oauth/callback?error=access_denied&error_description=User%20cancelled",

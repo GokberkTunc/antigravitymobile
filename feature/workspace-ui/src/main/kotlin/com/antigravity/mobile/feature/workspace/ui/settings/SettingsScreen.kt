@@ -327,6 +327,13 @@ fun SettingsListScreen(
                 .padding(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
+            SettingsSetupWizardRow(
+                readyCount = state.setupReadyCount,
+                totalSteps = state.setupTotalSteps,
+                isFullyReady = state.isSetupFullyReady,
+                onClick = { onAction(WorkspaceAction.OpenOnboardingFromSettings(fromSettings = true)) },
+            )
+
             SettingsCategoryGroup(
                 groupLabel = "Çalışma Alanı",
                 categories = listOf(
@@ -359,6 +366,104 @@ fun SettingsListScreen(
             )
 
             Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun SettingsSetupWizardRow(
+    readyCount: Int,
+    totalSteps: Int,
+    isFullyReady: Boolean,
+    onClick: () -> Unit,
+) {
+    val extendedColors = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+    val accent = if (isFullyReady) extendedColors.success else colorScheme.primary
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(20.dp),
+        color = settingsCardContainerColor(),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (isFullyReady) {
+                extendedColors.success.copy(alpha = if (extendedColors.isDark) 0.45f else 0.35f)
+            } else {
+                colorScheme.primary.copy(alpha = if (extendedColors.isDark) 0.45f else 0.30f)
+            },
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(accent.copy(alpha = if (extendedColors.isDark) 0.18f else 0.12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Default.VerifiedUser,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(21.dp),
+                )
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "Kurulum & Sistem Tanılama Sihirbazı",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = if (isFullyReady) {
+                        "Tüm sistem bileşenleri hazır • Yeniden denetle"
+                    } else {
+                        "Root, izinler, ARM64 chroot, agy CLI ve Google girişi"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = accent.copy(alpha = if (extendedColors.isDark) 0.16f else 0.11f),
+                border = BorderStroke(0.75.dp, accent.copy(alpha = 0.45f)),
+            ) {
+                Text(
+                    text = "$readyCount/$totalSteps hazır",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = accent,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
+
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp),
+            )
         }
     }
 }

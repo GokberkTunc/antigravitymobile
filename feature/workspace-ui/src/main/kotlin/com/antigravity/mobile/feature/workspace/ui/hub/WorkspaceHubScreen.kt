@@ -337,6 +337,19 @@ fun WorkspaceHubScreen(
                     }
                 }
 
+                // 0. Compact Setup Diagnostics Banner when critical prerequisites are missing
+                if (state.hasMissingCriticalSetup) {
+                    item(key = "hub-setup-warning") {
+                        HubSetupIncompleteCard(
+                            readyCount = state.setupReadyCount,
+                            totalSteps = state.setupTotalSteps,
+                            onOpenSetup = {
+                                onAction(WorkspaceAction.OpenOnboardingFromSettings(fromSettings = false))
+                            },
+                        )
+                    }
+                }
+
                 // 1. Live Multi-Bucket Quota Summary Card
                 item(key = "hub-quota-summary") {
                     HubMultiBucketQuotaCard(
@@ -676,6 +689,81 @@ private fun HubAccountActionButton(
                 contentDescription = "Hesap ve Kota",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+@Composable
+private fun HubSetupIncompleteCard(
+    readyCount: Int,
+    totalSteps: Int,
+    onOpenSetup: () -> Unit,
+) {
+    val ext = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = ext.warning.copy(alpha = if (ext.isDark) 0.13f else 0.09f),
+        border = BorderStroke(1.dp, ext.warning.copy(alpha = if (ext.isDark) 0.45f else 0.35f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onOpenSetup),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(ext.warning.copy(alpha = if (ext.isDark) 0.20f else 0.15f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.ErrorOutline,
+                    contentDescription = null,
+                    tint = ext.warning,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "Kurulumda eksik adımlar var ($readyCount/$totalSteps)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "Root, ARM64 chroot, agy CLI veya Google girişini tek dokunuşla tamamlayın.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            FilledTonalButton(
+                onClick = onOpenSetup,
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                modifier = Modifier.height(36.dp),
+            ) {
+                Text(
+                    text = "Kurulumu Aç",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
         }
     }
 }

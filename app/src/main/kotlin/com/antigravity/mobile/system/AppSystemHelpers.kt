@@ -98,6 +98,8 @@ object OAuthCallbackIntentParser {
     const val CUSTOM_SCHEME = "antigravity"
     const val CUSTOM_HOST = "oauth"
     const val CUSTOM_PATH_PREFIX = "/callback"
+    const val OFFICIAL_HTTPS_HOST = "antigravity.google"
+    const val OFFICIAL_HTTPS_PATH_PREFIX = "/oauth-callback"
 
     fun parseUriString(rawUri: String?): OAuthIntentParseResult {
         val trimmed = rawUri?.trim().orEmpty()
@@ -111,9 +113,18 @@ object OAuthCallbackIntentParser {
 
         val scheme = uri.scheme?.lowercase() ?: return OAuthIntentParseResult.NotOAuthIntent
         val host = uri.host?.lowercase() ?: return OAuthIntentParseResult.NotOAuthIntent
+        val path = uri.path ?: ""
 
-        // 1. Custom app scheme: antigravity://oauth/callback?code=...
-        if (scheme == CUSTOM_SCHEME && host == CUSTOM_HOST && (uri.path ?: "").startsWith(CUSTOM_PATH_PREFIX)) {
+        // 1. Custom app scheme (`antigravity://oauth/callback?code=...`) or official
+        //    Antigravity HTTPS callback (`https://antigravity.google/oauth-callback?code=...`)
+        val isCustomSchemeCallback = scheme == CUSTOM_SCHEME &&
+            host == CUSTOM_HOST &&
+            path.startsWith(CUSTOM_PATH_PREFIX)
+        val isOfficialHttpsCallback = scheme == "https" &&
+            host == OFFICIAL_HTTPS_HOST &&
+            path.startsWith(OFFICIAL_HTTPS_PATH_PREFIX)
+
+        if (isCustomSchemeCallback || isOfficialHttpsCallback) {
             val params = parseQueryParams(uri.rawQuery)
             val oauthError = params["error"]
             if (!oauthError.isNullOrBlank()) {

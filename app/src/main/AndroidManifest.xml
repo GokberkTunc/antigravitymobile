@@ -104,6 +104,15 @@
                     android:pathPrefix="/callback"
                     android:scheme="antigravity" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="antigravity.google"
+                    android:pathPrefix="/oauth-callback"
+                    android:scheme="https" />
+            </intent-filter>
         </activity>
 
         <!-- System-bound AccessibilityService for structured UI tree & 500ms Volume Kill-Switch -->

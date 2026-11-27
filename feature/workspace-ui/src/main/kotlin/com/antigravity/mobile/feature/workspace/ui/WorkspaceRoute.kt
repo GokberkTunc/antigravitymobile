@@ -52,6 +52,10 @@ fun AntigravityWorkspaceRoute(
     modifier: Modifier = Modifier,
     viewModel: WorkspaceViewModel = hiltViewModel(),
     applyTheme: Boolean = true,
+    isDeviceAdminActive: Boolean = false,
+    deviceAdminStatusNote: String? = null,
+    onEnableDeviceAdmin: (() -> Unit)? = null,
+    onRegisterSystemServices: (() -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -82,6 +86,10 @@ fun AntigravityWorkspaceRoute(
                 state = state,
                 onAction = viewModel::onAction,
                 modifier = modifier,
+                isDeviceAdminActive = isDeviceAdminActive,
+                deviceAdminStatusNote = deviceAdminStatusNote,
+                onEnableDeviceAdmin = onEnableDeviceAdmin,
+                onRegisterSystemServices = onRegisterSystemServices,
             )
         }
     } else {
@@ -89,6 +97,10 @@ fun AntigravityWorkspaceRoute(
             state = state,
             onAction = viewModel::onAction,
             modifier = modifier,
+            isDeviceAdminActive = isDeviceAdminActive,
+            deviceAdminStatusNote = deviceAdminStatusNote,
+            onEnableDeviceAdmin = onEnableDeviceAdmin,
+            onRegisterSystemServices = onRegisterSystemServices,
         )
     }
 }
@@ -98,6 +110,10 @@ fun AntigravityWorkspaceScaffold(
     state: WorkspaceUiState,
     onAction: (WorkspaceAction) -> Unit,
     modifier: Modifier = Modifier,
+    isDeviceAdminActive: Boolean = false,
+    deviceAdminStatusNote: String? = null,
+    onEnableDeviceAdmin: (() -> Unit)? = null,
+    onRegisterSystemServices: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
 
@@ -210,6 +226,10 @@ fun AntigravityWorkspaceScaffold(
                 state = state,
                 onAction = onAction,
                 modifier = modifier,
+                isDeviceAdminActive = isDeviceAdminActive,
+                deviceAdminStatusNote = deviceAdminStatusNote,
+                onEnableDeviceAdmin = onEnableDeviceAdmin,
+                onRegisterSystemServices = onRegisterSystemServices,
             )
         }
     }
