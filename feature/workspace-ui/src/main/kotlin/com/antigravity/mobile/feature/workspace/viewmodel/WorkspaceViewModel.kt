@@ -13,7 +13,9 @@ import com.antigravity.mobile.contracts.AcpSessionState
 import com.antigravity.mobile.contracts.AndroidMcpServer
 import com.antigravity.mobile.contracts.AuthFlowState
 import com.antigravity.mobile.contracts.AutomationScheduler
+import com.antigravity.mobile.contracts.BootstrapReport
 import com.antigravity.mobile.contracts.ChatMessageRole
+import com.antigravity.mobile.contracts.ChrootConstants
 import com.antigravity.mobile.contracts.ChrootManager
 import com.antigravity.mobile.contracts.ChrootState
 import com.antigravity.mobile.contracts.DiffApprovalStatus
@@ -57,6 +59,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.FileNotFoundException
+import java.net.URI
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
@@ -89,6 +95,8 @@ class WorkspaceViewModel @Inject constructor(
     internal var clockMs: () -> Long = System::currentTimeMillis
 
     private var hasAutoRefreshedQuota = false
+    private var hasAutoOpenedOnboarding = false
+    private var lastHandledAuthSuccess: AuthFlowState.Authenticated? = null
     private var lastRootBackPressEpochMs: Long = 0L
 
     internal constructor(
@@ -274,6 +282,23 @@ class WorkspaceViewModel @Inject constructor(
             WorkspaceAction.SetupChroot -> handleSetupChroot()
             WorkspaceAction.CheckOrInstallAgy -> handleCheckOrInstallAgy()
             WorkspaceAction.CompleteOnboarding -> handleCompleteOnboarding()
+            is WorkspaceAction.RunFullDiagnostics -> handleRunFullDiagnostics(action)
+            is WorkspaceAction.AutoFixAllPrerequisites -> handleAutoFixAllPrerequisites(action.packageName)
+            is WorkspaceAction.SyncAndroidSetupStatus -> _uiState.update { state ->
+                state.copy(
+                    onboarding = state.onboarding.copy(
+                        isOverlayPermissionGranted = action.isOverlayGranted,
+                        isDeviceAdminActive = action.isDeviceAdminActive,
+                    ),
+                )
+            }
+
+            WorkspaceAction.QuickGoogleSignIn -> handleQuickGoogleSignIn()
+            is WorkspaceAction.HandleClipboardAuthText -> handleClipboardAuthText(action.rawText, action.autoSubmit)
+            WorkspaceAction.ClearClipboardAuthHint -> _uiState.update { state ->
+                state.copy(onboarding = state.onboarding.copy(clipboardAutoAuthHint = null))
+            }
+
             WorkspaceAction.DismissError -> _uiState.update { it.copy(errorMessage = null) }
         }
     }
@@ -299,16 +324,53 @@ class WorkspaceViewModel @Inject constructor(
         }
         viewModelScope.launch {
             accountRepository.authFlowState.collect { authState ->
+                var refreshQuotaProfileId: String? = null
                 _uiState.update { state ->
                     val customTabUrl = (authState as? AuthFlowState.AwaitingBrowserAuth)
                         ?.challenge
                         ?.authUrl
-                    val clearedBanner = if (authState is AuthFlowState.Authenticated) null else state.authBanner
+                    val authenticatedState = authState as? AuthFlowState.Authenticated
+                    val isAuthenticated = authenticatedState != null
+                    val clearedBanner = if (isAuthenticated) null else state.authBanner
+                    val detectedEmail = authenticatedState?.email?.trim()?.ifBlank { null }
+                    val updatedProfiles = if (authenticatedState != null && detectedEmail != null) {
+                        state.profiles.map { profile ->
+                            if (profile.id == authenticatedState.profileId) {
+                                applyDetectedEmailIfGeneric(profile, detectedEmail)
+                            } else {
+                                profile
+                            }
+                        }
+                    } else {
+                        state.profiles
+                    }
+                    val updatedActiveProfile = if (authenticatedState != null && detectedEmail != null &&
+                        state.activeProfile?.id == authenticatedState.profileId
+                    ) {
+                        applyDetectedEmailIfGeneric(state.activeProfile, detectedEmail)
+                    } else {
+                        state.activeProfile
+                    }
+                    val updatedOnboarding = if (isAuthenticated) {
+                        state.onboarding.copy(clipboardAutoAuthHint = null)
+                    } else {
+                        state.onboarding
+                    }
+                    if (authenticatedState != null && lastHandledAuthSuccess != authenticatedState) {
+                        lastHandledAuthSuccess = authenticatedState
+                        refreshQuotaProfileId = authenticatedState.profileId
+                    }
                     state.copy(
+                        profiles = updatedProfiles,
+                        activeProfile = updatedActiveProfile,
                         authFlowState = authState,
                         authBanner = clearedBanner,
                         pendingChromeCustomTabUrl = customTabUrl ?: state.pendingChromeCustomTabUrl,
+                        onboarding = updatedOnboarding,
                     )
+                }
+                refreshQuotaProfileId?.let { profileId ->
+                    handleRefreshUsage(profileId = profileId, postChatSummary = false)
                 }
             }
         }
@@ -990,40 +1052,46 @@ class WorkspaceViewModel @Inject constructor(
 
     private fun handleStartOAuthLogin(profileId: String, capturedAuthUrl: String?) {
         viewModelScope.launch {
+            startOAuthLoginInternal(profileId, capturedAuthUrl)
+        }
+    }
+
+    private suspend fun startOAuthLoginInternal(profileId: String, capturedAuthUrl: String?) {
+        _uiState.update { state ->
+            state.copy(
+                errorMessage = null,
+                onboarding = state.onboarding.copy(
+                    isBusy = true,
+                    statusMessage = "Google OAuth bağlantısı hazırlanıyor...",
+                    errorMessage = null,
+                    clipboardAutoAuthHint = null,
+                    lastAutoSubmittedClipboardCode = null,
+                ),
+            )
+        }
+        runSuspendCatching {
+            accountRepository.startLoginFlow(profileId, capturedAuthUrl).getOrThrow()
+        }.onSuccess { challenge ->
             _uiState.update { state ->
                 state.copy(
-                    errorMessage = null,
+                    pendingChromeCustomTabUrl = challenge.authUrl,
                     onboarding = state.onboarding.copy(
-                        isBusy = true,
-                        statusMessage = "Google OAuth bağlantısı hazırlanıyor...",
+                        isBusy = false,
+                        statusMessage = "Google giriş sayfası açıldı. Giriş sonrası aldığınız kodu (veya yönlendirilen tam URL'yi) aşağıya yapıştırıp Onayla'ya basın.",
                         errorMessage = null,
                     ),
                 )
             }
-            runSuspendCatching {
-                accountRepository.startLoginFlow(profileId, capturedAuthUrl).getOrThrow()
-            }.onSuccess { challenge ->
-                _uiState.update { state ->
-                    state.copy(
-                        pendingChromeCustomTabUrl = challenge.authUrl,
-                        onboarding = state.onboarding.copy(
-                            isBusy = false,
-                            statusMessage = "Google giriş sayfası açıldı. Giriş sonrası aldığınız kodu (veya yönlendirilen tam URL'yi) aşağıya yapıştırıp Onayla'ya basın.",
-                            errorMessage = null,
-                        ),
-                    )
-                }
-            }.onFailure { error ->
-                val msg = error.message ?: "OAuth girişi başlatılamadı"
-                _uiState.update { state ->
-                    state.copy(
+        }.onFailure { error ->
+            val msg = error.message ?: "OAuth girişi başlatılamadı"
+            _uiState.update { state ->
+                state.copy(
+                    errorMessage = msg,
+                    onboarding = state.onboarding.copy(
+                        isBusy = false,
                         errorMessage = msg,
-                        onboarding = state.onboarding.copy(
-                            isBusy = false,
-                            errorMessage = msg,
-                        ),
-                    )
-                }
+                    ),
+                )
             }
         }
     }
@@ -1045,15 +1113,25 @@ class WorkspaceViewModel @Inject constructor(
             runSuspendCatching {
                 accountRepository.submitAuthCode(profileId, cleanCode).getOrThrow()
             }.onSuccess { profile ->
-                val verifiedLabel = profile.email ?: profile.displayName
+                val normalizedProfile = profile.email
+                    ?.trim()
+                    ?.ifBlank { null }
+                    ?.let { applyDetectedEmailIfGeneric(profile, it) }
+                    ?: profile
+                val verifiedLabel = normalizedProfile.email ?: normalizedProfile.displayName
                 _uiState.update { state ->
+                    val updatedProfiles = state.profiles.map { existing ->
+                        if (existing.id == normalizedProfile.id) normalizedProfile else existing
+                    }
                     state.copy(
+                        profiles = updatedProfiles,
                         authBanner = null,
-                        activeProfile = profile,
+                        activeProfile = normalizedProfile,
                         onboarding = state.onboarding.copy(
                             isBusy = false,
                             statusMessage = "Google hesabı doğrulandı: $verifiedLabel",
                             errorMessage = null,
+                            clipboardAutoAuthHint = null,
                         ),
                     )
                 }
@@ -1069,6 +1147,7 @@ class WorkspaceViewModel @Inject constructor(
                         onboarding = state.onboarding.copy(
                             isBusy = false,
                             errorMessage = msg,
+                            clipboardAutoAuthHint = null,
                         ),
                     )
                 }
@@ -1126,6 +1205,7 @@ class WorkspaceViewModel @Inject constructor(
     private fun handleRefreshUsage(profileId: String?, postChatSummary: Boolean = false) {
         val targetProfile = if (profileId != null) {
             _uiState.value.profiles.firstOrNull { it.id == profileId }
+                ?: _uiState.value.activeProfile?.takeIf { it.id == profileId }
         } else {
             _uiState.value.activeProfile
         } ?: return
@@ -1798,6 +1878,9 @@ class WorkspaceViewModel @Inject constructor(
     }
 
     private fun handleSetShowOnboarding(show: Boolean) {
+        if (!show) {
+            hasAutoOpenedOnboarding = true
+        }
         _uiState.update { state ->
             val nextStack = if (show) {
                 if (state.currentDestination is AppDestination.Onboarding) {
@@ -1813,6 +1896,7 @@ class WorkspaceViewModel @Inject constructor(
     }
 
     private fun handleDismissOnboarding() {
+        hasAutoOpenedOnboarding = true
         _uiState.update { state ->
             val nextStack = if (state.currentDestination is AppDestination.Onboarding && state.backStack.size > 1) {
                 state.backStack.dropLast(1)
@@ -1824,6 +1908,7 @@ class WorkspaceViewModel @Inject constructor(
     }
 
     private fun handleCompleteOnboarding() {
+        hasAutoOpenedOnboarding = true
         _uiState.update { state ->
             val nextStack = if (state.currentDestination is AppDestination.Onboarding && state.backStack.size > 1) {
                 state.backStack.dropLast(1)
@@ -2278,6 +2363,532 @@ class WorkspaceViewModel @Inject constructor(
         }
     }
 
+    private fun handleRunFullDiagnostics(action: WorkspaceAction.RunFullDiagnostics) {
+        if (_uiState.value.onboarding.isRunningDiagnostics) return
+        viewModelScope.launch {
+            runDiagnosticsInternal(
+                packageName = action.packageName,
+                isOverlayGranted = action.isOverlayGranted,
+                isDeviceAdminActive = action.isDeviceAdminActive,
+                allowAutoOpenOnboarding = true,
+                preserveVerifiedState = false,
+            )
+        }
+    }
+
+    private suspend fun runDiagnosticsInternal(
+        packageName: String,
+        isOverlayGranted: Boolean,
+        isDeviceAdminActive: Boolean,
+        allowAutoOpenOnboarding: Boolean,
+        preserveVerifiedState: Boolean,
+    ) {
+        _uiState.update { state ->
+            state.copy(
+                onboarding = state.onboarding.copy(
+                    isRunningDiagnostics = true,
+                    isOverlayPermissionGranted = isOverlayGranted,
+                    isDeviceAdminActive = isDeviceAdminActive,
+                ),
+            )
+        }
+        try {
+            val detectedEnv = runSuspendCatching { rootExecutor.detectEnvironment() }.getOrNull()
+            val effectiveRootEnv = detectedEnv ?: _uiState.value.onboarding.rootEnvironment
+            val rootGranted = effectiveRootEnv?.isRootGranted == true
+
+            val cleanPkg = packageName.trim().filter { it.isLetterOrDigit() || it == '.' || it == '_' }
+            val existingReport = _uiState.value.onboarding.bootstrapReport
+            val liveBootstrapReport = if (effectiveRootEnv != null && effectiveRootEnv.isRootGranted) {
+                if (cleanPkg.isNotEmpty()) {
+                    val restrictedRes = runSuspendCatching {
+                        rootExecutor.exec("appops get $cleanPkg ACCESS_RESTRICTED_SETTINGS")
+                    }.getOrNull()
+                    val accessibilityRes = runSuspendCatching {
+                        rootExecutor.exec("settings get secure enabled_accessibility_services")
+                    }.getOrNull()
+                    val notifRes = runSuspendCatching {
+                        rootExecutor.exec("settings get secure enabled_notification_listeners")
+                    }.getOrNull()
+                    val batteryRes = runSuspendCatching {
+                        rootExecutor.exec("dumpsys deviceidle whitelist")
+                    }.getOrNull()
+
+                    val liveRestricted = restrictedRes?.let {
+                        it.isSuccess && it.stdout.contains("allow", ignoreCase = true)
+                    } ?: false
+                    val liveAccessibility = accessibilityRes?.let {
+                        it.isSuccess && it.stdout.contains(cleanPkg)
+                    } ?: false
+                    val liveNotif = notifRes?.let {
+                        it.isSuccess && it.stdout.contains(cleanPkg)
+                    } ?: false
+                    val liveBattery = batteryRes?.let {
+                        it.isSuccess && it.stdout.contains(cleanPkg)
+                    } ?: false
+
+                    val keepRestricted = preserveVerifiedState &&
+                        restrictedRes?.stdout.isNullOrBlank() &&
+                        existingReport?.restrictedSettingsGranted == true
+                    val keepAccessibility = preserveVerifiedState &&
+                        accessibilityRes?.stdout.isNullOrBlank() &&
+                        existingReport?.accessibilityEnabled == true
+                    val keepNotif = preserveVerifiedState &&
+                        notifRes?.stdout.isNullOrBlank() &&
+                        existingReport?.notificationListenerEnabled == true
+                    val keepBattery = preserveVerifiedState &&
+                        batteryRes?.stdout.isNullOrBlank() &&
+                        existingReport?.batteryOptimizationExempted == true
+
+                    BootstrapReport(
+                        packageName = cleanPkg,
+                        environment = effectiveRootEnv,
+                        runtimePermissionsGranted = if (preserveVerifiedState) {
+                            existingReport?.runtimePermissionsGranted.orEmpty()
+                        } else {
+                            emptyList()
+                        },
+                        appOpsGranted = if (preserveVerifiedState) {
+                            existingReport?.appOpsGranted.orEmpty()
+                        } else {
+                            emptyList()
+                        },
+                        restrictedSettingsGranted = liveRestricted || keepRestricted,
+                        accessibilityEnabled = liveAccessibility || keepAccessibility,
+                        notificationListenerEnabled = liveNotif || keepNotif,
+                        batteryOptimizationExempted = liveBattery || keepBattery,
+                        steps = if (preserveVerifiedState) existingReport?.steps.orEmpty() else emptyList(),
+                        warnings = if (preserveVerifiedState) existingReport?.warnings.orEmpty() else emptyList(),
+                    )
+                } else {
+                    existingReport
+                }
+            } else {
+                null
+            }
+
+            val mountStatus = runSuspendCatching { chrootManager.getMountStatus() }.getOrNull()
+            val detectedAgyVersion = runSuspendCatching { chrootManager.getAgyVersion().getOrNull() }
+                .getOrNull()
+                ?.trim()
+                ?.ifBlank { null }
+            val currentChroot = _uiState.value.onboarding.chrootState
+            val rootfsPath = when (currentChroot) {
+                is ChrootState.Mounted -> currentChroot.rootfsPath
+                is ChrootState.Unmounted -> currentChroot.rootfsPath
+                else -> ChrootConstants.DEFAULT_ROOTFS_PATH
+            }
+            val resolvedAgyVersion = detectedAgyVersion
+                ?: if (preserveVerifiedState) _uiState.value.onboarding.agyVersion else null
+            val resolvedChrootState = when {
+                mountStatus?.allCoreMounted == true -> ChrootState.Mounted(
+                    rootfsPath = rootfsPath,
+                    agyVersion = resolvedAgyVersion,
+                    mountStatus = mountStatus,
+                )
+
+                preserveVerifiedState && currentChroot is ChrootState.Mounted -> currentChroot.copy(
+                    agyVersion = resolvedAgyVersion ?: currentChroot.agyVersion,
+                )
+
+                else -> currentChroot
+            }
+
+            var curlInstalled = false
+            var caCertsInstalled = false
+            var netcatInstalled = false
+            if (rootGranted) {
+                val depsCommand =
+                    """chroot $rootfsPath /bin/sh -c "command -v curl >/dev/null 2>&1 && echo CURL; [ -f /etc/ssl/certs/ca-certificates.crt ] && echo CERTS; command -v nc >/dev/null 2>&1 && echo NC""""
+                val depsResult = runSuspendCatching { rootExecutor.exec(depsCommand) }.getOrNull()
+                if (depsResult != null && !depsResult.timedOut) {
+                    val tokens = depsResult.stdout
+                        .lines()
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .toSet()
+                    curlInstalled = "CURL" in tokens
+                    caCertsInstalled = "CERTS" in tokens
+                    netcatInstalled = "NC" in tokens
+                }
+            }
+            val depsReady = curlInstalled && caCertsInstalled && netcatInstalled
+
+            _uiState.update { state ->
+                val updatedState = state.copy(
+                    onboarding = state.onboarding.copy(
+                        rootEnvironment = effectiveRootEnv,
+                        bootstrapReport = liveBootstrapReport,
+                        chrootState = resolvedChrootState,
+                        agyVersion = resolvedAgyVersion,
+                        diagnosticsChecked = true,
+                        isRunningDiagnostics = false,
+                        isOverlayPermissionGranted = isOverlayGranted,
+                        isDeviceAdminActive = isDeviceAdminActive,
+                        chrootCurlInstalled = curlInstalled,
+                        chrootCaCertsInstalled = caCertsInstalled,
+                        chrootNetcatInstalled = netcatInstalled,
+                        chrootDependenciesReady = depsReady,
+                    ),
+                )
+                val shouldAutoOpenOnboarding = allowAutoOpenOnboarding &&
+                    !hasAutoOpenedOnboarding &&
+                    !updatedState.onboarding.isCompleted &&
+                    !updatedState.onboarding.isAutoFixingAll &&
+                    updatedState.hasMissingCriticalSetup &&
+                    updatedState.currentDestination == AppDestination.Hub &&
+                    updatedState.messages.isEmpty()
+
+                if (shouldAutoOpenOnboarding) {
+                    hasAutoOpenedOnboarding = true
+                    withBackStack(
+                        state = updatedState,
+                        rawStack = listOf(AppDestination.Hub, AppDestination.Onboarding),
+                    )
+                } else {
+                    updatedState
+                }
+            }
+        } finally {
+            _uiState.update { state ->
+                if (state.onboarding.isRunningDiagnostics) {
+                    state.copy(onboarding = state.onboarding.copy(isRunningDiagnostics = false))
+                } else {
+                    state
+                }
+            }
+        }
+    }
+
+    private fun handleAutoFixAllPrerequisites(packageName: String) {
+        if (_uiState.value.onboarding.isAutoFixingAll) return
+        viewModelScope.launch {
+            _uiState.update { state ->
+                state.copy(
+                    errorMessage = null,
+                    onboarding = state.onboarding.copy(
+                        isAutoFixingAll = true,
+                        isBusy = true,
+                        autoFixStageLabel = "Root ortamı denetleniyor...",
+                        errorMessage = null,
+                    ),
+                )
+            }
+            try {
+                // Stage 1: Root environment detection
+                val rootEnv = runSuspendCatching { rootExecutor.detectEnvironment() }
+                    .getOrElse { error ->
+                        setAutoFixError(error.message ?: "Root ortamı denetlenemedi.")
+                        return@launch
+                    }
+                _uiState.update { state ->
+                    state.copy(onboarding = state.onboarding.copy(rootEnvironment = rootEnv))
+                }
+                if (!rootEnv.isRootGranted) {
+                    val guidance = rootEnv.guidanceMessage.ifBlank {
+                        "Root erişimi bulunamadı. KernelSU Manager veya Magisk içinden Antigravity Mobile uygulamasına Süper Kullanıcı (root) yetkisi verip tekrar deneyin."
+                    }
+                    setAutoFixError(guidance)
+                    return@launch
+                }
+
+                // Stage 2: Android system permissions & services bootstrap
+                updateAutoFixStage("Sistem izinleri ve servisler yapılandırılıyor...")
+                val report = runSuspendCatching {
+                    rootExecutor.bootstrapPermissions(packageName = packageName)
+                }.getOrElse { error ->
+                    setAutoFixError(error.message ?: "Sistem izinleri yapılandırılamadı.")
+                    return@launch
+                }
+                _uiState.update { state ->
+                    state.copy(
+                        onboarding = state.onboarding.copy(
+                            rootEnvironment = report.environment,
+                            bootstrapReport = report,
+                        ),
+                    )
+                }
+
+                // Stage 3: ARM64 glibc chroot installation & mount
+                updateAutoFixStage("ARM64 glibc chroot kuruluyor ve bağlanıyor...")
+                val alreadyMounted = _uiState.value.onboarding.isChrootMounted ||
+                    (runSuspendCatching { chrootManager.getMountStatus() }.getOrNull()?.allCoreMounted == true)
+                if (!alreadyMounted) {
+                    val onboardingSnapshot = _uiState.value.onboarding
+                    val initialSource: RootfsSource = when (onboardingSnapshot.selectedRootfsSource) {
+                        RootfsSourceOption.BUNDLED_ASSET -> RootfsSource.BundledAsset()
+                        RootfsSourceOption.REMOTE_DOWNLOAD -> RootfsSource.RemoteDownload(
+                            url = onboardingSnapshot.remoteRootfsUrl,
+                        )
+                        RootfsSourceOption.LOCAL_FILE -> RootfsSource.LocalFile(
+                            absolutePath = onboardingSnapshot.localRootfsPath,
+                        )
+                    }
+                    val rootfsResult = runSuspendCatching {
+                        chrootManager.ensureRootfsReady(initialSource).getOrThrow()
+                    }
+                    if (rootfsResult.isFailure) {
+                        val failure = rootfsResult.exceptionOrNull()!!
+                        if (onboardingSnapshot.selectedRootfsSource == RootfsSourceOption.BUNDLED_ASSET &&
+                            isAssetNotFoundFailure(failure)
+                        ) {
+                            _uiState.update { state ->
+                                state.copy(
+                                    onboarding = state.onboarding.copy(
+                                        selectedRootfsSource = RootfsSourceOption.REMOTE_DOWNLOAD,
+                                    ),
+                                )
+                            }
+                            runSuspendCatching {
+                                chrootManager.ensureRootfsReady(
+                                    RootfsSource.RemoteDownload(url = onboardingSnapshot.remoteRootfsUrl),
+                                ).getOrThrow()
+                            }.getOrElse { fallbackError ->
+                                setAutoFixError(fallbackError.message ?: "Uzak rootfs indirilemedi.")
+                                return@launch
+                            }
+                        } else {
+                            setAutoFixError(failure.message ?: "ARM64 rootfs kurulumu başarısız.")
+                            return@launch
+                        }
+                    }
+
+                    val mountStatus = runSuspendCatching {
+                        chrootManager.mountAll().getOrThrow()
+                    }.getOrElse { error ->
+                        setAutoFixError(error.message ?: "Chroot bağlanamadı.")
+                        return@launch
+                    }
+                    if (mountStatus.allCoreMounted) {
+                        _uiState.update { state ->
+                            state.copy(
+                                onboarding = state.onboarding.copy(
+                                    chrootState = ChrootState.Mounted(
+                                        agyVersion = state.onboarding.agyVersion,
+                                        mountStatus = mountStatus,
+                                    ),
+                                ),
+                            )
+                        }
+                    }
+                }
+
+                // Stage 4: Chroot packages & agy CLI installation
+                updateAutoFixStage("Chroot paketleri ve agy CLI kuruluyor...")
+                val preInstallOnboarding = _uiState.value.onboarding
+                if (preInstallOnboarding.agyVersion.isNullOrBlank() || !preInstallOnboarding.chrootDependenciesReady) {
+                    val installedVersion = runSuspendCatching {
+                        chrootManager.installOrUpdateAgy().getOrThrow()
+                    }.getOrElse { error ->
+                        setAutoFixError(error.message ?: "agy CLI kurulumu başarısız.")
+                        return@launch
+                    }
+                    _uiState.update { state ->
+                        val updatedChroot = when (val chroot = state.onboarding.chrootState) {
+                            is ChrootState.Mounted -> chroot.copy(agyVersion = installedVersion)
+                            else -> chroot
+                        }
+                        state.copy(
+                            onboarding = state.onboarding.copy(
+                                agyVersion = installedVersion,
+                                chrootState = updatedChroot,
+                            ),
+                        )
+                    }
+                }
+
+                // Stage 5: Re-run live diagnostics so every step reflects current truth
+                val currentOnboarding = _uiState.value.onboarding
+                runDiagnosticsInternal(
+                    packageName = packageName,
+                    isOverlayGranted = currentOnboarding.isOverlayPermissionGranted,
+                    isDeviceAdminActive = currentOnboarding.isDeviceAdminActive,
+                    allowAutoOpenOnboarding = false,
+                    preserveVerifiedState = true,
+                )
+
+                val completionMessage = if (_uiState.value.activeProfile?.isAuthenticated == true) {
+                    "Kurulum tamamen hazır!"
+                } else {
+                    "Tüm sistem bileşenleri hazır! Şimdi tek dokunuşla Google hesabınıza giriş yapabilirsiniz."
+                }
+                _uiState.update { state ->
+                    state.copy(
+                        onboarding = state.onboarding.copy(
+                            isAutoFixingAll = false,
+                            isBusy = false,
+                            autoFixStageLabel = null,
+                            errorMessage = null,
+                            statusMessage = completionMessage,
+                        ),
+                    )
+                }
+            } finally {
+                _uiState.update { state ->
+                    if (state.onboarding.isAutoFixingAll || state.onboarding.isBusy || state.onboarding.autoFixStageLabel != null) {
+                        state.copy(
+                            onboarding = state.onboarding.copy(
+                                isAutoFixingAll = false,
+                                isBusy = false,
+                                autoFixStageLabel = null,
+                            ),
+                        )
+                    } else {
+                        state
+                    }
+                }
+            }
+        }
+    }
+
+    private fun updateAutoFixStage(label: String) {
+        _uiState.update { state ->
+            state.copy(onboarding = state.onboarding.copy(autoFixStageLabel = label))
+        }
+    }
+
+    private fun setAutoFixError(message: String) {
+        _uiState.update { state ->
+            state.copy(
+                errorMessage = message,
+                onboarding = state.onboarding.copy(
+                    isAutoFixingAll = false,
+                    isBusy = false,
+                    autoFixStageLabel = null,
+                    errorMessage = message,
+                ),
+            )
+        }
+    }
+
+    private fun handleQuickGoogleSignIn() {
+        viewModelScope.launch {
+            runSuspendCatching {
+                val currentState = _uiState.value
+                val targetProfile = currentState.activeProfile
+                    ?: currentState.profiles.firstOrNull()?.let { existing ->
+                        accountRepository.switchActiveProfile(existing.id).getOrThrow()
+                    }
+                    ?: run {
+                        val created = accountRepository.createProfile(DEFAULT_QUICK_PROFILE_NAME, null).getOrThrow()
+                        accountRepository.switchActiveProfile(created.id).getOrThrow()
+                    }
+
+                _uiState.update { state ->
+                    val alreadyListed = state.profiles.any { it.id == targetProfile.id }
+                    state.copy(
+                        profiles = if (alreadyListed) state.profiles else state.profiles + targetProfile,
+                        activeProfile = targetProfile,
+                    )
+                }
+
+                var isChrootMounted = _uiState.value.onboarding.isChrootMounted
+                if (!isChrootMounted) {
+                    val liveMount = runSuspendCatching { chrootManager.getMountStatus() }.getOrNull()
+                    if (liveMount?.allCoreMounted == true) {
+                        isChrootMounted = true
+                        _uiState.update { state ->
+                            state.copy(
+                                onboarding = state.onboarding.copy(
+                                    chrootState = ChrootState.Mounted(
+                                        agyVersion = state.onboarding.agyVersion,
+                                        mountStatus = liveMount,
+                                    ),
+                                ),
+                            )
+                        }
+                    }
+                }
+
+                var isAgyAvailable = !_uiState.value.onboarding.agyVersion.isNullOrBlank()
+                if (!isAgyAvailable && isChrootMounted) {
+                    val liveAgy = runSuspendCatching { chrootManager.getAgyVersion().getOrNull() }
+                        .getOrNull()
+                        ?.trim()
+                        ?.ifBlank { null }
+                    if (liveAgy != null) {
+                        isAgyAvailable = true
+                        _uiState.update { state ->
+                            state.copy(onboarding = state.onboarding.copy(agyVersion = liveAgy))
+                        }
+                    }
+                }
+
+                if (!isChrootMounted || !isAgyAvailable) {
+                    val msg = "Google girişi için önce Chroot ve agy CLI kurulu olmalıdır. Yukarıdaki 'Tüm Eksikleri Otomatik Düzelt' butonuna basın."
+                    _uiState.update { state ->
+                        state.copy(
+                            errorMessage = msg,
+                            onboarding = state.onboarding.copy(
+                                isBusy = false,
+                                errorMessage = msg,
+                            ),
+                        )
+                    }
+                    return@runSuspendCatching
+                }
+
+                startOAuthLoginInternal(profileId = targetProfile.id, capturedAuthUrl = null)
+            }.onFailure { error ->
+                val msg = error.message ?: "Hızlı Google girişi başlatılamadı"
+                _uiState.update { state ->
+                    state.copy(
+                        errorMessage = msg,
+                        onboarding = state.onboarding.copy(
+                            isBusy = false,
+                            errorMessage = msg,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun handleClipboardAuthText(rawText: String, autoSubmit: Boolean) {
+        val code = ClipboardOAuthMatcher.extractCode(rawText) ?: return
+        val state = _uiState.value
+        val awaitingAuth = state.authFlowState as? AuthFlowState.AwaitingBrowserAuth ?: return
+        if (code == state.onboarding.lastAutoSubmittedClipboardCode) return
+
+        val targetProfileId = awaitingAuth.challenge.profileId.ifBlank {
+            state.activeProfile?.id ?: return
+        }
+        _uiState.update { current ->
+            current.copy(
+                onboarding = current.onboarding.copy(
+                    lastAutoSubmittedClipboardCode = code,
+                    clipboardAutoAuthHint = "Panodan Google doğrulama kodu algılandı ve gönderiliyor...",
+                ),
+            )
+        }
+        if (autoSubmit) {
+            handleSubmitAuthCode(targetProfileId, code)
+        }
+    }
+
+    private fun applyDetectedEmailIfGeneric(profile: AccountProfile, detectedEmail: String): AccountProfile {
+        val normalizedCurrent = profile.displayName.trim().lowercase(Locale.ROOT)
+        val isGeneric = normalizedCurrent.isEmpty() || normalizedCurrent in GENERIC_PROFILE_NAMES
+        return profile.copy(
+            email = profile.email?.takeIf { it.isNotBlank() } ?: detectedEmail,
+            displayName = if (isGeneric) detectedEmail else profile.displayName,
+            isAuthenticated = true,
+        )
+    }
+
+    private fun isAssetNotFoundFailure(error: Throwable): Boolean {
+        if (error is FileNotFoundException) return true
+        val combinedMessage = generateSequence(error) { it.cause }
+            .mapNotNull { it.message }
+            .joinToString(" ")
+            .lowercase(Locale.US)
+        return combinedMessage.contains("asset") ||
+            combinedMessage.contains("not found") ||
+            combinedMessage.contains("bulunamad") ||
+            combinedMessage.contains("no such file") ||
+            combinedMessage.contains("enoent")
+    }
+
     // --- Helpers ---
 
     private fun addAttachment(pathOrLabel: String) {
@@ -2557,6 +3168,18 @@ class WorkspaceViewModel @Inject constructor(
     companion object {
         internal const val EXIT_CONFIRM_WINDOW_MS = 2_000L
         internal const val EXIT_CONFIRM_MESSAGE = "Uygulamadan çıkmak için tekrar geri tuşuna basın"
+        internal const val DEFAULT_QUICK_PROFILE_NAME = "Ana Google Hesabım"
+
+        private val GENERIC_PROFILE_NAMES = setOf(
+            "ana google hesabım",
+            "ana google hesabim",
+            "varsayılan hesap",
+            "varsayilan hesap",
+            "google hesabı",
+            "google hesabi",
+            "yeni hesap",
+            "default",
+        )
 
         private val NON_REUSABLE_SESSION_STATES = setOf(
             AcpSessionState.ERROR,
@@ -2564,5 +3187,76 @@ class WorkspaceViewModel @Inject constructor(
             AcpSessionState.DISCONNECTED,
             AcpSessionState.CLOSED,
         )
+    }
+}
+
+/**
+ * Pure, dependency-free matcher that strictly extracts Google OAuth authorization codes
+ * (`4/[0-9A-Za-z_-]{20,}`) or `code=` parameters from trusted Antigravity/loopback OAuth
+ * callback URLs while ignoring ordinary clipboard content.
+ */
+internal object ClipboardOAuthMatcher {
+    private val RAW_GOOGLE_CODE_REGEX = Regex("^4/[0-9A-Za-z_-]{20,}$")
+    private val ENCODED_GOOGLE_CODE_REGEX = Regex("^4%2[Ff][0-9A-Za-z_-]{20,}$")
+
+    fun extractCode(rawText: String): String? {
+        val trimmed = rawText.trim()
+        if (trimmed.isEmpty()) return null
+
+        if (RAW_GOOGLE_CODE_REGEX.matches(trimmed)) {
+            return trimmed
+        }
+        if (ENCODED_GOOGLE_CODE_REGEX.matches(trimmed)) {
+            return decodeUtf8(trimmed)?.takeIf { RAW_GOOGLE_CODE_REGEX.matches(it) }
+        }
+
+        // Reject multi-word clipboard snippets that are not a single URL
+        if (trimmed.any { it.isWhitespace() }) return null
+
+        val normalizedUrl = if (trimmed.startsWith("antigravity.google/oauth-callback", ignoreCase = true)) {
+            "https://$trimmed"
+        } else {
+            trimmed
+        }
+
+        val uri = try {
+            URI(normalizedUrl)
+        } catch (_: Exception) {
+            return null
+        }
+
+        val scheme = uri.scheme?.lowercase(Locale.US) ?: return null
+        val host = uri.host?.lowercase(Locale.US) ?: return null
+        val path = uri.path.orEmpty()
+
+        val isTrustedCallback = when (scheme) {
+            "antigravity" -> host == "oauth" && (path == "/callback" || path.startsWith("/callback/"))
+            "http", "https" -> (host == "antigravity.google" && path.startsWith("/oauth-callback")) ||
+                host == "127.0.0.1" ||
+                host == "localhost"
+            else -> false
+        }
+        if (!isTrustedCallback) return null
+
+        val query = uri.rawQuery ?: return null
+        for (pair in query.split('&')) {
+            val eqIdx = pair.indexOf('=')
+            if (eqIdx <= 0) continue
+            val key = pair.substring(0, eqIdx)
+            if (key == "code") {
+                val rawValue = pair.substring(eqIdx + 1)
+                val decoded = decodeUtf8(rawValue)?.trim() ?: return null
+                if (decoded.isNotEmpty() && decoded.none { it.isWhitespace() }) {
+                    return decoded
+                }
+            }
+        }
+        return null
+    }
+
+    private fun decodeUtf8(value: String): String? = try {
+        URLDecoder.decode(value, StandardCharsets.UTF_8.name())
+    } catch (_: Exception) {
+        null
     }
 }
