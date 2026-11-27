@@ -1650,7 +1650,7 @@ class WorkspaceViewModelTest {
     }
 
     @Test
-    fun `SessionStateChanged READY finalizes stale RUNNING tool calls on streaming assistant message`() = runTest {
+    fun `SessionStateChanged READY closes normal RUNNING tools but preserves background run_workflow until ERROR`() = runTest {
         advanceUntilIdle()
 
         acpEventsFlow.emit(
@@ -1662,14 +1662,90 @@ class WorkspaceViewModelTest {
                 argumentsJson = """{"CommandLine":"pytest"}""",
             ),
         )
+        acpEventsFlow.emit(
+            AcpEvent.ToolCallUpdate(
+                sessionId = "sess-ready",
+                callId = "call-wf-bg",
+                toolName = "run_workflow",
+                status = ToolCallStatus.RUNNING,
+                argumentsJson = """{"Description":"Background pipeline","ScriptPath":"/tmp/wf.py"}""",
+            ),
+        )
         advanceUntilIdle()
-        assertEquals(ToolCallStatus.RUNNING, viewModel.uiState.value.messages.last().toolCalls.first().status)
 
         acpEventsFlow.emit(AcpEvent.SessionStateChanged(sessionId = "sess-ready", state = AcpSessionState.READY))
         advanceUntilIdle()
 
-        val lastMsg = viewModel.uiState.value.messages.last()
-        assertFalse(lastMsg.isStreaming)
-        assertEquals(ToolCallStatus.COMPLETED, lastMsg.toolCalls.first().status)
+        val afterReady = viewModel.uiState.value.messages.last()
+        assertFalse(afterReady.isStreaming)
+        assertEquals(ToolCallStatus.COMPLETED, afterReady.toolCalls.first { it.callId == "call-cmd-1" }.status)
+        assertEquals(ToolCallStatus.RUNNING, afterReady.toolCalls.first { it.callId == "call-wf-bg" }.status)
+
+        acpEventsFlow.emit(AcpEvent.SessionStateChanged(sessionId = "sess-ready", state = AcpSessionState.ERROR))
+        advanceUntilIdle()
+        assertEquals(
+            ToolCallStatus.FAILED,
+            viewModel.uiState.value.messages.last().toolCalls.first { it.callId == "call-wf-bg" }.status,
+        )
+    }
+
+    @Test
+    fun `unrelated script tool is ignored, inline workflow script and manage_task keep unique subagent IDs, and nested markdown renders`() = runTest {
+        advanceUntilIdle()
+
+        // 1. Unrelated tool with a `script` argument must NOT pollute subagents/swarm
+        acpEventsFlow.emit(
+            AcpEvent.ToolCallUpdate(
+                sessionId = "sess-misc",
+                callId = "call-eval",
+                toolName = "eval_js",
+                status = ToolCallStatus.COMPLETED,
+                argumentsJson = """{"script":"1 + 1"}""",
+            ),
+        )
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.subagents.isEmpty())
+        assertTrue(viewModel.uiState.value.swarmBoardState.swarmTitle.isBlank())
+
+        // 2. Inline run_workflow Script + follow-up manage_task log reusing a conversation UUID must keep IDs unique
+        acpEventsFlow.emit(
+            AcpEvent.ToolCallUpdate(
+                sessionId = "sess-misc",
+                callId = "call-inline-wf",
+                toolName = "run_workflow",
+                status = ToolCallStatus.RUNNING,
+                argumentsJson = """{"Description":"Inline flow","Script":"await agent(role=\"Reviewer\")"}""",
+            ),
+        )
+        acpEventsFlow.emit(
+            AcpEvent.ToolCallUpdate(
+                sessionId = "sess-misc",
+                callId = "call-status-1",
+                toolName = "manage_task",
+                status = ToolCallStatus.COMPLETED,
+                argumentsJson = """{"Action":"status"}""",
+                outputPreview = """
+                    - [phase] 1. Review
+                    - [agent:self] Reviewer: done (shared-uuid): First pass
+                    - [agent:self] Reviewer Recheck: done (shared-uuid): Second pass
+                """.trimIndent(),
+            ),
+        )
+        advanceUntilIdle()
+
+        val subagents = viewModel.uiState.value.subagents
+        assertEquals(subagents.size, subagents.map { it.id }.distinct().size)
+        assertTrue(subagents.any { it.id == "shared-uuid" && it.status == SwarmMemberStatus.DONE })
+
+        // 3. Recursive renderInlineMarkdown strips nested backticks inside bold and tolerates unclosed markers
+        val rendered = com.antigravity.mobile.feature.workspace.ui.chat.renderInlineMarkdown(
+            text = "**Python (`dagflow`)** ve **kapanmamış *italik",
+            inlineCodeBg = androidx.compose.ui.graphics.Color.Gray,
+            inlineCodeFg = androidx.compose.ui.graphics.Color.Cyan,
+            linkColor = androidx.compose.ui.graphics.Color.Blue,
+        )
+        assertFalse(rendered.text.contains('`'))
+        assertTrue(rendered.text.contains("dagflow"))
+        assertTrue(rendered.text.contains("kapanmamış"))
     }
 }

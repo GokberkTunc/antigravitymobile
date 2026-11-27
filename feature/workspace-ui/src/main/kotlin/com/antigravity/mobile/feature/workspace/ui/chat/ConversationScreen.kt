@@ -2558,7 +2558,7 @@ private fun parseMarkdownBlocks(raw: String): List<MarkdownBlock> {
     return result
 }
 
-private fun renderInlineMarkdown(
+internal fun renderInlineMarkdown(
     text: String,
     inlineCodeBg: Color,
     inlineCodeFg: Color,

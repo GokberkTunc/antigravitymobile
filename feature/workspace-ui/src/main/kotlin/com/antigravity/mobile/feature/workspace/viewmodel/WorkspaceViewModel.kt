@@ -634,24 +634,24 @@ class WorkspaceViewModel @Inject constructor(
                     event.state == AcpSessionState.CLOSED
                 _uiState.update { state ->
                     val updatedMessages = if (finalizeStreaming) {
+                        val isTerminalErrorOrClose = event.state == AcpSessionState.ERROR || event.state == AcpSessionState.CLOSED
                         val terminalToolStatus = if (event.state == AcpSessionState.ERROR) {
                             ToolCallStatus.FAILED
                         } else {
                             ToolCallStatus.COMPLETED
                         }
                         state.messages.map { msg ->
-                            val hasPendingTool = msg.toolCalls.any {
-                                it.status == ToolCallStatus.RUNNING || it.status == ToolCallStatus.PENDING
+                            val hasFinalizableTool = msg.toolCalls.any { call ->
+                                (call.status == ToolCallStatus.RUNNING || call.status == ToolCallStatus.PENDING) &&
+                                    (isTerminalErrorOrClose || !call.toolName.contains("run_workflow", ignoreCase = true))
                             }
-                            if (msg.isStreaming || hasPendingTool) {
+                            if (msg.isStreaming || hasFinalizableTool) {
                                 msg.copy(
                                     isStreaming = false,
                                     toolCalls = msg.toolCalls.map { call ->
-                                        if (call.status == ToolCallStatus.RUNNING || call.status == ToolCallStatus.PENDING) {
-                                            call.copy(status = terminalToolStatus)
-                                        } else {
-                                            call
-                                        }
+                                        val shouldClose = (call.status == ToolCallStatus.RUNNING || call.status == ToolCallStatus.PENDING) &&
+                                            (isTerminalErrorOrClose || !call.toolName.contains("run_workflow", ignoreCase = true))
+                                        if (shouldClose) call.copy(status = terminalToolStatus) else call
                                     },
                                 )
                             } else {
@@ -3177,10 +3177,8 @@ class WorkspaceViewModel @Inject constructor(
         val isSwarmTool = rawName == "swarm" || rawName.endsWith(":swarm")
         val isSubagentTool = rawName == "invoke_subagent" || rawName.endsWith(":invoke_subagent")
         val isPostMessageTool = rawName == "post_message" || rawName.endsWith(":post_message")
-        val isWorkflowTool = rawName == "run_workflow" ||
-            rawName.endsWith(":run_workflow") ||
-            rawName.contains("run_workflow") ||
-            (argsObj != null && (
+        val isWorkflowTool = rawName.contains("run_workflow") ||
+            ((rawName.isBlank() || rawName == "unknown_tool") && argsObj != null && (
                 argsObj.containsKey("ScriptPath") ||
                     argsObj.containsKey("Script") ||
                     argsObj.containsKey("scriptPath") ||
@@ -3212,11 +3210,40 @@ class WorkspaceViewModel @Inject constructor(
                 val membersByName = linkedMapOf<String, com.antigravity.mobile.contracts.SwarmMemberInfo>().apply {
                     board.members.forEach { put(it.name, it) }
                 }
-                val subagentsByKey = linkedMapOf<String, SubagentItem>().apply {
-                    state.subagents.forEach { put(it.name, it) }
+                val subagentsById = linkedMapOf<String, SubagentItem>().apply {
+                    state.subagents.forEach { put(it.id, it) }
                 }
                 val messages = board.messages.toMutableList()
                 var nextSeq = (messages.maxOfOrNull { it.seq } ?: 0) + 1
+
+                fun upsertAgent(
+                    id: String,
+                    name: String,
+                    role: String,
+                    status: SwarmMemberStatus,
+                    summary: String,
+                ) {
+                    val staleId = subagentsById.values.firstOrNull {
+                        it.name == name && it.id != id && it.role.startsWith("run_workflow")
+                    }?.id
+                    if (staleId != null) subagentsById.remove(staleId)
+
+                    subagentsById[id] = SubagentItem(
+                        id = id,
+                        name = name,
+                        role = role,
+                        model = state.selectedModel.displayName,
+                        status = status,
+                        lastUpdate = summary,
+                    )
+                    membersByName[name] = com.antigravity.mobile.contracts.SwarmMemberInfo(
+                        name = name,
+                        role = role,
+                        model = state.selectedModel.displayName,
+                        status = status,
+                        lastUpdateText = summary,
+                    )
+                }
 
                 fun appendBoardMessage(sender: String, text: String, mentions: List<String> = emptyList()) {
                     val trimmed = text.trim()
@@ -3231,13 +3258,10 @@ class WorkspaceViewModel @Inject constructor(
                     )
                 }
 
-                // 1. Extract phase announcements from workflow log output
                 WORKFLOW_PHASE_REGEX.findAll(outputText).forEach { match ->
-                    val phaseLabel = match.groupValues[1].trim()
-                    appendBoardMessage(sender = "orchestrator", text = "Faz: $phaseLabel")
+                    appendBoardMessage(sender = "orchestrator", text = "Faz: ${match.groupValues[1].trim()}")
                 }
 
-                // 2. Extract real spawned agents from workflow log output (`- [agent:self] System Architect: done (uuid): ...`)
                 var parsedAnyAgent = false
                 WORKFLOW_AGENT_REGEX.findAll(outputText).forEach { match ->
                     parsedAnyAgent = true
@@ -3253,76 +3277,29 @@ class WorkspaceViewModel @Inject constructor(
                         "failed", "error", "cancelled", "canceled" -> SwarmMemberStatus.ERROR
                         else -> SwarmMemberStatus.WORKING
                     }
-                    subagentsByKey[roleName] = SubagentItem(
-                        id = convId,
-                        name = roleName,
-                        role = "workflow/$agentType",
-                        model = state.selectedModel.displayName,
-                        status = agentStatus,
-                        lastUpdate = summaryText,
-                    )
-                    membersByName[roleName] = com.antigravity.mobile.contracts.SwarmMemberInfo(
-                        name = roleName,
-                        role = "workflow/$agentType",
-                        model = state.selectedModel.displayName,
-                        status = agentStatus,
-                        lastUpdateText = summaryText,
-                    )
-                    appendBoardMessage(
-                        sender = roleName,
-                        text = "[${rawStatus}] $summaryText",
-                    )
+                    upsertAgent(convId, roleName, "workflow/$agentType", agentStatus, summaryText)
+                    appendBoardMessage(sender = roleName, text = "[$rawStatus] $summaryText")
                 }
 
-                // 3. Extract declared roles from inline Script if not already reported in output
                 if (script.isNotBlank()) {
                     WORKFLOW_SCRIPT_ROLE_REGEX.findAll(script).forEach { match ->
                         val roleName = match.groupValues[1].trim()
-                        if (roleName.isNotEmpty() && !subagentsByKey.containsKey(roleName)) {
+                        if (roleName.isNotEmpty() && !membersByName.containsKey(roleName)) {
                             parsedAnyAgent = true
                             val infoText = description?.take(120) ?: "Workflow içinde planlandı"
-                            subagentsByKey[roleName] = SubagentItem(
-                                id = "${event.callId}-$roleName",
-                                name = roleName,
-                                role = "run_workflow",
-                                model = state.selectedModel.displayName,
-                                status = mappedStatus,
-                                lastUpdate = infoText,
-                            )
-                            membersByName[roleName] = com.antigravity.mobile.contracts.SwarmMemberInfo(
-                                name = roleName,
-                                role = "run_workflow",
-                                model = state.selectedModel.displayName,
-                                status = mappedStatus,
-                                lastUpdateText = infoText,
-                            )
+                            upsertAgent("${event.callId}-$roleName", roleName, "run_workflow", mappedStatus, infoText)
                         }
                     }
                 }
 
-                // 4. Always ensure a visible Orchestrator entry when run_workflow starts (e.g. ScriptPath before log arrives)
                 val orchestratorName = "Workflow Orchestrator"
                 if (isWorkflowTool) {
                     val orchestratorSummary = (description ?: outputText.lineSequence().firstOrNull()?.trim())
                         .orEmpty()
                         .ifBlank { "Çoklu ajan iş akışı çalışıyor..." }
                         .take(140)
-                    if (!parsedAnyAgent || subagentsByKey.containsKey(orchestratorName)) {
-                        subagentsByKey[orchestratorName] = SubagentItem(
-                            id = event.callId,
-                            name = orchestratorName,
-                            role = "run_workflow",
-                            model = state.selectedModel.displayName,
-                            status = mappedStatus,
-                            lastUpdate = orchestratorSummary,
-                        )
-                        membersByName[orchestratorName] = com.antigravity.mobile.contracts.SwarmMemberInfo(
-                            name = orchestratorName,
-                            role = "run_workflow",
-                            model = state.selectedModel.displayName,
-                            status = mappedStatus,
-                            lastUpdateText = orchestratorSummary,
-                        )
+                    if (!parsedAnyAgent || membersByName.containsKey(orchestratorName)) {
+                        upsertAgent(event.callId, orchestratorName, "run_workflow", mappedStatus, orchestratorSummary)
                     }
                     if (!description.isNullOrBlank()) {
                         appendBoardMessage(sender = "orchestrator", text = description)
@@ -3333,7 +3310,7 @@ class WorkspaceViewModel @Inject constructor(
                     ?: board.swarmTitle.ifBlank { "Workflow Orkestrasyonu" }
 
                 state.copy(
-                    subagents = subagentsByKey.values.toList(),
+                    subagents = subagentsById.values.toList(),
                     swarmBoardState = board.copy(
                         swarmTitle = nextTitle,
                         members = membersByName.values.toList(),
