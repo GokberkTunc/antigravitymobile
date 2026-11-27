@@ -2571,7 +2571,7 @@ private fun renderInlineMarkdown(
                 val end = text.indexOf("***", index + 3)
                 if (end > index + 3) {
                     withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
-                        append(text.substring(index + 3, end))
+                        append(renderInlineMarkdown(text.substring(index + 3, end), inlineCodeBg, inlineCodeFg, linkColor))
                     }
                     index = end + 3
                 } else {
@@ -2584,7 +2584,7 @@ private fun renderInlineMarkdown(
                 val end = text.indexOf("**", index + 2)
                 if (end > index + 2) {
                     withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) {
-                        append(text.substring(index + 2, end))
+                        append(renderInlineMarkdown(text.substring(index + 2, end), inlineCodeBg, inlineCodeFg, linkColor))
                     }
                     index = end + 2
                 } else {
@@ -2597,7 +2597,7 @@ private fun renderInlineMarkdown(
                 val end = text.indexOf("~~", index + 2)
                 if (end > index + 2) {
                     withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
-                        append(text.substring(index + 2, end))
+                        append(renderInlineMarkdown(text.substring(index + 2, end), inlineCodeBg, inlineCodeFg, linkColor))
                     }
                     index = end + 2
                 } else {
@@ -2610,7 +2610,7 @@ private fun renderInlineMarkdown(
                 val end = text.indexOf('*', index + 1)
                 if (end > index + 1) {
                     withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-                        append(text.substring(index + 1, end))
+                        append(renderInlineMarkdown(text.substring(index + 1, end), inlineCodeBg, inlineCodeFg, linkColor))
                     }
                     index = end + 1
                 } else {

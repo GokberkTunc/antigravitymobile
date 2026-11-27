@@ -1591,4 +1591,85 @@ class WorkspaceViewModelTest {
         assertEquals("dev@gmail.com", viewModel.uiState.value.activeProfile?.email)
         coVerify(atLeast = 1) { accountRepository.refreshUsage(genericProfile.id) }
     }
+
+    @Test
+    fun `run_workflow tool call and completion log project orchestrator, phases, and subagents into overview tabs`() = runTest {
+        advanceUntilIdle()
+
+        // 1. Initial tool_call when run_workflow starts with ScriptPath
+        acpEventsFlow.emit(
+            AcpEvent.ToolCallUpdate(
+                sessionId = "sess-wf",
+                callId = "call-wf-1",
+                toolName = "run_workflow",
+                status = ToolCallStatus.RUNNING,
+                argumentsJson = """{"Description":"Build dagflow package","ScriptPath":"/tmp/orchestrate_dagflow.py"}""",
+                outputPreview = null,
+            ),
+        )
+        advanceUntilIdle()
+
+        assertEquals("Build dagflow package", viewModel.uiState.value.swarmBoardState.swarmTitle)
+        assertTrue(viewModel.uiState.value.subagents.any { it.name == "Workflow Orchestrator" && it.status == SwarmMemberStatus.WORKING })
+
+        // 2. Follow-up tool_call_update omits rawInput (`{}`) and toolName (`unknown_tool`) but sends workflow log output
+        val workflowOutput = """
+            - [phase] 1. Architecture & Spec
+            - [agent:self] System Architect: done (badc0ab2-528a): Designed models and engine
+            - [phase] 2. Parallel Implementation
+            - [agent:self] Core Engine Developer: done (9b09cd68-1111): Implemented DAGRunner
+            - [agent:self] Test Engineer: done (4d38c288-2222): Added 51 pytest tests
+        """.trimIndent()
+        acpEventsFlow.emit(
+            AcpEvent.ToolCallUpdate(
+                sessionId = "sess-wf",
+                callId = "call-wf-1",
+                toolName = "unknown_tool",
+                status = ToolCallStatus.COMPLETED,
+                argumentsJson = "{}",
+                outputPreview = workflowOutput,
+            ),
+        )
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        val names = state.subagents.map { it.name }
+        assertTrue("System Architect" in names)
+        assertTrue("Core Engine Developer" in names)
+        assertTrue("Test Engineer" in names)
+        assertEquals(SwarmMemberStatus.DONE, state.subagents.first { it.name == "System Architect" }.status)
+        assertEquals("badc0ab2-528a", state.subagents.first { it.name == "System Architect" }.id)
+        assertTrue(state.swarmBoardState.members.any { it.name == "Core Engine Developer" && it.status == SwarmMemberStatus.DONE })
+        assertTrue(state.swarmBoardState.messages.any { it.text.contains("1. Architecture & Spec") })
+
+        // Merged tool summary on message preserved original toolName and argumentsJson
+        val toolCall = state.messages.last().toolCalls.first { it.callId == "call-wf-1" }
+        assertEquals("run_workflow", toolCall.toolName)
+        assertTrue(toolCall.argumentsPreview.contains("orchestrate_dagflow.py"))
+        assertEquals(ToolCallStatus.COMPLETED, toolCall.status)
+    }
+
+    @Test
+    fun `SessionStateChanged READY finalizes stale RUNNING tool calls on streaming assistant message`() = runTest {
+        advanceUntilIdle()
+
+        acpEventsFlow.emit(
+            AcpEvent.ToolCallUpdate(
+                sessionId = "sess-ready",
+                callId = "call-cmd-1",
+                toolName = "run_command",
+                status = ToolCallStatus.RUNNING,
+                argumentsJson = """{"CommandLine":"pytest"}""",
+            ),
+        )
+        advanceUntilIdle()
+        assertEquals(ToolCallStatus.RUNNING, viewModel.uiState.value.messages.last().toolCalls.first().status)
+
+        acpEventsFlow.emit(AcpEvent.SessionStateChanged(sessionId = "sess-ready", state = AcpSessionState.READY))
+        advanceUntilIdle()
+
+        val lastMsg = viewModel.uiState.value.messages.last()
+        assertFalse(lastMsg.isStreaming)
+        assertEquals(ToolCallStatus.COMPLETED, lastMsg.toolCalls.first().status)
+    }
 }
