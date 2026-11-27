@@ -233,6 +233,15 @@ data class WorkspaceUiState(
     val isSetupFullyReady: Boolean
         get() = setupReadyCount == setupTotalSteps
 
+    val missingSetupStepLabels: List<String>
+        get() = buildList {
+            if (!onboarding.isRootReady) add("1. Root Yetkisi")
+            if (!onboarding.isPermissionsReady) add("2. Sistem İzinleri")
+            if (!onboarding.isChrootMounted) add("3. ARM64 Chroot")
+            if (!onboarding.isAgyReady) add("4. Chroot Paketleri & agy CLI")
+            if (activeProfile?.isAuthenticated != true) add("5. Google Hesabı")
+        }
+
     val hasMissingCriticalSetup: Boolean
         get() = onboarding.diagnosticsChecked && (
             !onboarding.isRootReady ||

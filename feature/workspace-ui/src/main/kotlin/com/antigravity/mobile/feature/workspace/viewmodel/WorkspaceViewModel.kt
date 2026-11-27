@@ -2499,7 +2499,7 @@ class WorkspaceViewModel @Inject constructor(
             var netcatInstalled = false
             if (rootGranted) {
                 val depsCommand =
-                    """chroot $rootfsPath /bin/sh -c "command -v curl >/dev/null 2>&1 && echo CURL; [ -f /etc/ssl/certs/ca-certificates.crt ] && echo CERTS; command -v nc >/dev/null 2>&1 && echo NC""""
+                    """chroot $rootfsPath /usr/bin/env -i PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/sh -c "command -v curl >/dev/null 2>&1 && echo CURL; [ -f /etc/ssl/certs/ca-certificates.crt ] && echo CERTS; command -v nc >/dev/null 2>&1 && echo NC""""
                 val depsResult = runSuspendCatching { rootExecutor.exec(depsCommand) }.getOrNull()
                 if (depsResult != null && !depsResult.timedOut) {
                     val tokens = depsResult.stdout

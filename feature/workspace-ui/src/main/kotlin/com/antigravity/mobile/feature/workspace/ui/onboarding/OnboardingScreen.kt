@@ -292,6 +292,7 @@ fun OnboardingScreen(
                 readyCount = state.setupReadyCount,
                 totalSteps = state.setupTotalSteps,
                 isFullyReady = state.isSetupFullyReady,
+                missingSteps = state.missingSetupStepLabels,
                 isDiagnosing = onboarding.isRunningDiagnostics,
                 isAutoFixingAll = onboarding.isAutoFixingAll,
                 autoFixStageLabel = onboarding.autoFixStageLabel,
@@ -1241,11 +1242,13 @@ fun OnboardingScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SetupHeroReadinessCard(
     readyCount: Int,
     totalSteps: Int,
     isFullyReady: Boolean,
+    missingSteps: List<String>,
     isDiagnosing: Boolean,
     isAutoFixingAll: Boolean,
     autoFixStageLabel: String?,
@@ -1347,6 +1350,29 @@ private fun SetupHeroReadinessCard(
                         style = MaterialTheme.typography.bodySmall,
                         color = colorScheme.onSurfaceVariant,
                     )
+                }
+            }
+
+            if (missingSteps.isNotEmpty() && !isDiagnosing && !isAutoFixingAll) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    missingSteps.forEach { stepLabel ->
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = extColors.warning.copy(alpha = if (extColors.isDark) 0.16f else 0.12f),
+                            border = BorderStroke(1.dp, extColors.warning.copy(alpha = 0.45f)),
+                        ) {
+                            Text(
+                                text = "Eksik: $stepLabel",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                color = extColors.warning,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
                 }
             }
 

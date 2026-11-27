@@ -401,7 +401,7 @@ class ChrootAgyAuthBridge(
                 environment = profile.paths.toChrootEnvironment(),
             )
             val argv = chrootManager.buildChrootCommand(spec)
-            val res = rootExecutor.execArgv(argv = argv, timeoutMs = 30_000L)
+            val res = rootExecutor.execArgv(argv = argv, timeoutMs = 45_000L)
             val stdout = res.stdout
                 .replace("\r\n", "\n")
                 .replace('\r', '\n')
