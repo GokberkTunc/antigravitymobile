@@ -30,6 +30,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -116,28 +117,18 @@ class KtorAndroidMcpServer(
         val startedAt = System.currentTimeMillis()
         totalCallsHandled.set(0L)
 
-        val targetPort = if (port == 0) {
-            withContext(ioDispatcher) {
-                ServerSocket(0, 1, InetAddress.getByName(LOOPBACK_HOST)).use { socket ->
-                    socket.localPort
-                }
-            }
-        } else {
-            port
-        }
-
         val ownedScope = CoroutineScope(SupervisorJob() + ioDispatcher)
         val engine = withContext(ioDispatcher) {
             createAndStartServer(
                 scope = ownedScope,
-                targetPort = targetPort,
+                targetPort = port,
                 bearerToken = bearerToken,
             )
         }
 
         val resolvedConnector = engine.engine.resolvedConnectors().firstOrNull()
         val boundHost = resolvedConnector?.host ?: LOOPBACK_HOST
-        val boundPort = resolvedConnector?.port ?: targetPort
+        val boundPort = resolvedConnector?.port ?: port
         check(boundHost == LOOPBACK_HOST || boundHost == "localhost") {
             "Refusing non-loopback MCP binding: $boundHost"
         }
@@ -266,6 +257,9 @@ class KtorAndroidMcpServer(
     ): Result<String> = withContext(ioDispatcher) {
         try {
             require(profileConfigDir.isNotBlank()) { "profileConfigDir must not be blank" }
+            require(endpoint.host == LOOPBACK_HOST || endpoint.host == "localhost") {
+                "Refusing non-loopback MCP endpoint host: ${endpoint.host}"
+            }
             val dir = File(profileConfigDir)
             if (!dir.exists() && !dir.mkdirs()) {
                 return@withContext Result.failure(
@@ -311,11 +305,34 @@ class KtorAndroidMcpServer(
 
             val rendered = prettyJson.encodeToString(JsonObject.serializer(), rootConfig)
             val tmpFile = File(dir, "$MCP_CONFIG_FILENAME.tmp")
-            tmpFile.writeText(rendered, Charsets.UTF_8)
-            if (!tmpFile.renameTo(configFile)) {
-                configFile.writeText(rendered, Charsets.UTF_8)
-                tmpFile.delete()
+            java.io.FileOutputStream(tmpFile).use { fos ->
+                fos.write(rendered.toByteArray(Charsets.UTF_8))
+                fos.flush()
+                runCatching { fos.fd.sync() }
             }
+            tmpFile.setReadable(false, false)
+            tmpFile.setReadable(true, true)
+            tmpFile.setWritable(false, false)
+            tmpFile.setWritable(true, true)
+            tmpFile.setExecutable(false, false)
+            try {
+                java.nio.file.Files.move(
+                    tmpFile.toPath(),
+                    configFile.toPath(),
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (_: Throwable) {
+                if (!tmpFile.renameTo(configFile)) {
+                    configFile.writeText(rendered, Charsets.UTF_8)
+                    tmpFile.delete()
+                }
+            }
+            configFile.setReadable(false, false)
+            configFile.setReadable(true, true)
+            configFile.setWritable(false, false)
+            configFile.setWritable(true, true)
+            configFile.setExecutable(false, false)
             Result.success(configFile.absolutePath)
         } catch (ce: CancellationException) {
             throw ce
@@ -414,7 +431,9 @@ class KtorAndroidMcpServer(
                 val callId = (id as? JsonPrimitive)?.contentOrNull ?: UUID.randomUUID().toString()
 
                 val count = totalCallsHandled.incrementAndGet()
-                _health.value = _health.value.copy(totalCallsHandled = count)
+                _health.update { current ->
+                    current.copy(totalCallsHandled = maxOf(current.totalCallsHandled, count))
+                }
 
                 val toolResult = dispatcher.dispatch(
                     McpToolCall(

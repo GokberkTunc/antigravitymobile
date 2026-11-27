@@ -31,8 +31,6 @@ dependencies {
     implementation(project(":core:accessibility-engine"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.bundles.ktor.server)
-    implementation(libs.bundles.camerax)
-    implementation(libs.play.services.location)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)

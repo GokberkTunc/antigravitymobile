@@ -229,7 +229,9 @@ class DefaultAcpClient(
         val transport = activeTransport?.takeIf { it.isAlive }
             ?: return Result.failure(IllegalStateException("ACP client has no active running session"))
 
-        activeTurnInFlight.set(true)
+        if (!activeTurnInFlight.compareAndSet(false, true)) {
+            return Result.failure(IllegalStateException("Another ACP prompt turn is already in flight"))
+        }
         updateState(AcpSessionState.STREAMING, sessionId = sessionId)
 
         return try {

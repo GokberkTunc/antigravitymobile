@@ -392,8 +392,16 @@ class DefaultSecurityPolicyEngine(
     }
 
     private fun isSystemPath(rawPath: String): Boolean {
-        val trimmed = rawPath.trim()
-        return trimmed == "/system" || trimmed.startsWith("/system/")
+        val parts = rawPath.trim().replace('\\', '/').split('/')
+        val resolved = ArrayList<String>(parts.size)
+        for (part in parts) {
+            when (part) {
+                "", "." -> continue
+                ".." -> if (resolved.isNotEmpty()) resolved.removeAt(resolved.lastIndex)
+                else -> resolved.add(part)
+            }
+        }
+        return resolved.firstOrNull() == "system"
     }
 
     private fun maxRisk(a: McpToolRisk, b: McpToolRisk): McpToolRisk {

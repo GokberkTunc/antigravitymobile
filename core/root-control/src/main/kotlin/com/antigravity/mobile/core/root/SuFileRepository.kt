@@ -198,7 +198,8 @@ class LibsuFileRepository(
             // Shell fallback using safe POSIX quoting + base64 to preserve binary/newline fidelity.
             val readPlusOne = safeLimit + 1
             val quoted = ShellEscaping.quote(safePath)
-            val cmd = "dd if=$quoted bs=1 skip=$safeOffset count=$readPlusOne 2>/dev/null | base64 | tr -d '\\n'"
+            val cmd = "if [ ! -e $quoted ] || [ -d $quoted ] || [ ! -r $quoted ]; then echo 'unreadable' >&2; exit 1; fi; " +
+                "dd if=$quoted bs=1 skip=$safeOffset count=$readPlusOne 2>/dev/null | base64 | tr -d '\\n'"
             val res = rootExecutor.exec(cmd)
             if (!res.isSuccess) {
                 return@withContext Result.failure(
@@ -250,15 +251,43 @@ class LibsuFileRepository(
                 )
             }
 
-            val encoded = Base64.getEncoder().encodeToString(bytes)
             val quotedPath = ShellEscaping.quote(safePath)
-            val redirect = if (append) ">>" else ">"
-            val cmd = "mkdir -p \"\$(dirname $quotedPath)\" && printf %s ${ShellEscaping.quote(encoded)} | base64 -d $redirect $quotedPath"
-            val res = rootExecutor.exec(cmd)
-            if (!res.isSuccess) {
-                return@withContext Result.failure(
-                    IllegalStateException("fs_write failed for $safePath: ${res.stderr.ifBlank { "exit=${res.exitCode}" }}"),
-                )
+            val chunkSizeBytes = 24 * 1024 // multiple of 3 for clean base64 chunks well below ARG_MAX
+            if (bytes.size <= chunkSizeBytes) {
+                val encoded = Base64.getEncoder().encodeToString(bytes)
+                val redirect = if (append) ">>" else ">"
+                val cmd = "mkdir -p \"\$(dirname $quotedPath)\" && printf %s ${ShellEscaping.quote(encoded)} | base64 -d $redirect $quotedPath"
+                val res = rootExecutor.exec(cmd)
+                if (!res.isSuccess) {
+                    return@withContext Result.failure(
+                        IllegalStateException("fs_write failed for $safePath: ${res.stderr.ifBlank { "exit=${res.exitCode}" }}"),
+                    )
+                }
+            } else {
+                val initCmd = if (append) {
+                    "mkdir -p \"\$(dirname $quotedPath)\""
+                } else {
+                    "mkdir -p \"\$(dirname $quotedPath)\" && : > $quotedPath"
+                }
+                val initRes = rootExecutor.exec(initCmd)
+                if (!initRes.isSuccess) {
+                    return@withContext Result.failure(
+                        IllegalStateException("fs_write init failed for $safePath: ${initRes.stderr.ifBlank { "exit=${initRes.exitCode}" }}"),
+                    )
+                }
+                var offset = 0
+                while (offset < bytes.size) {
+                    val end = minOf(offset + chunkSizeBytes, bytes.size)
+                    val encodedChunk = Base64.getEncoder().encodeToString(bytes.copyOfRange(offset, end))
+                    val chunkCmd = "printf %s ${ShellEscaping.quote(encodedChunk)} | base64 -d >> $quotedPath"
+                    val chunkRes = rootExecutor.exec(chunkCmd)
+                    if (!chunkRes.isSuccess) {
+                        return@withContext Result.failure(
+                            IllegalStateException("fs_write chunk failed for $safePath: ${chunkRes.stderr.ifBlank { "exit=${chunkRes.exitCode}" }}"),
+                        )
+                    }
+                    offset = end
+                }
             }
             Result.success(
                 RootFileWriteResult(

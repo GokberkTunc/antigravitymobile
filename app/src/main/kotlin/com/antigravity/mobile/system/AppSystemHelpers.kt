@@ -40,25 +40,6 @@ class DeviceAdminHelper @Inject constructor(
 }
 
 /**
- * Launches validated Google OAuth URLs in Chrome Custom Tabs.
- */
-@Singleton
-class CustomTabsHelper @Inject constructor() {
-    fun launchAuthUrl(context: Context, authUrl: String): Boolean {
-        if (!OAuthUrlExtractor.isValidGoogleAuthUrl(authUrl)) {
-            return false
-        }
-        return runCatching {
-            val customTabsIntent = CustomTabsIntent.Builder()
-                .setShowTitle(true)
-                .build()
-            customTabsIntent.launchUrl(context, Uri.parse(authUrl))
-            true
-        }.getOrDefault(false)
-    }
-}
-
-/**
  * Coordinates `:app`-specific component names for one-tap root permission bootstrapping
  * and foreground/overlay service startup.
  */
@@ -168,14 +149,14 @@ object OAuthCallbackIntentParser {
         for (pair in rawQuery.split('&')) {
             if (pair.isEmpty()) continue
             val idx = pair.indexOf('=')
-            val key = java.net.URLDecoder.decode(
-                if (idx >= 0) pair.substring(0, idx) else pair,
-                Charsets.UTF_8.name(),
-            )
-            val value = java.net.URLDecoder.decode(
-                if (idx >= 0) pair.substring(idx + 1) else "",
-                Charsets.UTF_8.name(),
-            )
+            val rawKey = if (idx >= 0) pair.substring(0, idx) else pair
+            val rawVal = if (idx >= 0) pair.substring(idx + 1) else ""
+            val key = runCatching {
+                java.net.URLDecoder.decode(rawKey, Charsets.UTF_8.name())
+            }.getOrDefault("")
+            val value = runCatching {
+                java.net.URLDecoder.decode(rawVal, Charsets.UTF_8.name())
+            }.getOrDefault("")
             if (key.isNotEmpty()) {
                 result[key] = value
             }

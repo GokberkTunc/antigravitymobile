@@ -110,6 +110,6 @@ class AndroidScheduledTaskNotifier(
     companion object {
         const val CHANNEL_ID = "antigravity_scheduled_tasks"
 
-        fun notificationId(taskId: String): Int = 55_000 + (taskId.hashCode() and 0x7FFF)
+        fun notificationId(taskId: String): Int = 100_000 + (taskId.hashCode() and 0x3FFF_FFFF)
     }
 }

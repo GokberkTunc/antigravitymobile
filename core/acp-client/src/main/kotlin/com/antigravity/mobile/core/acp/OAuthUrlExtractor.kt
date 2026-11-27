@@ -104,22 +104,21 @@ object OAuthUrlExtractor {
 
     fun extractAnyUrl(text: String): String? {
         val urls = findUrls(text)
-        if (urls.isEmpty()) return null
-        return urls.firstOrNull { isKnownAuthUrl(it) } ?: urls.first()
+        return urls.firstOrNull { isKnownAuthUrl(it) } ?: urls.firstOrNull()
     }
 
     private fun findUrls(text: String): List<String> =
         URL_REGEX.findAll(text)
             .map { match -> match.value.trimEnd(*TRAILING_PUNCTUATION) }
-            .filter { it.startsWith("https://") || it.startsWith("http://") }
+            .filter { it.startsWith("https://") }
             .toList()
 
     private fun isKnownAuthUrl(url: String): Boolean {
-        val lower = url.lowercase()
-        if (AUTH_DOMAINS.any { lower.contains(it) }) return true
-        return lower.contains("oauth") ||
-            lower.contains("client_id=") ||
-            lower.contains("redirect_uri=") ||
-            lower.contains("/authorize")
+        val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return false
+        val scheme = uri.scheme?.lowercase() ?: return false
+        val host = uri.host?.lowercase() ?: return false
+        return scheme == "https" && AUTH_DOMAINS.any { domain ->
+            host == domain || host.endsWith(".$domain")
+        }
     }
 }

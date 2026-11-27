@@ -213,6 +213,7 @@ class AutomationSchedulerImpl(
                     errorMessage = ce.message ?: "Cancelled",
                 )
                 upsertRun(cancelledRun)
+                rescheduleAfterRun(task, cancelledRun.finishedAtEpochMs ?: clock())
             }
             throw ce
         } catch (t: Throwable) {
@@ -224,9 +225,15 @@ class AutomationSchedulerImpl(
         }
 
         upsertRun(finalRun)
+        val updatedTask = rescheduleAfterRun(task, finalRun.finishedAtEpochMs ?: clock())
+        notifier.notifyRunCompleted(updatedTask ?: task, finalRun)
+        return finalRun
+    }
 
-        // Update task metadata and reschedule next occurrence if recurring & enabled
-        val finishedAt = finalRun.finishedAtEpochMs ?: clock()
+    private suspend fun rescheduleAfterRun(
+        task: ScheduledTask,
+        finishedAt: Long,
+    ): ScheduledTask? {
         val updatedTask = stateMutex.withLock {
             hydrateUnlocked()
             val latest = _tasks.value.firstOrNull { it.id == task.id } ?: return@withLock null
@@ -259,9 +266,7 @@ class AutomationSchedulerImpl(
                 dispatchBackend.cancel(updatedTask.id)
             }
         }
-
-        notifier.notifyRunCompleted(updatedTask ?: task, finalRun)
-        return finalRun
+        return updatedTask
     }
 
     private suspend fun upsertRun(run: ScheduledTaskRun) {

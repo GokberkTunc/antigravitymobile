@@ -190,23 +190,31 @@ class MainActivity : ComponentActivity() {
 
     private fun handleOAuthCallbackIntent(intent: Intent?) {
         val rawUri = intent?.dataString ?: return
+        val awaiting = workspaceViewModel.uiState.value.authFlowState
+            as? com.antigravity.mobile.contracts.AuthFlowState.AwaitingBrowserAuth
+            ?: return
         when (val parsed = OAuthCallbackIntentParser.parseUriString(rawUri)) {
             is OAuthIntentParseResult.AuthorizationCode -> {
-                val targetProfileId = workspaceViewModel.uiState.value.activeProfile?.id
-                    ?: workspaceViewModel.uiState.value.profiles.firstOrNull()?.id
-                    ?: return
+                val expectedState = runCatching {
+                    val query = java.net.URI(awaiting.challenge.authUrl).rawQuery.orEmpty()
+                    query.split('&')
+                        .firstOrNull { it.startsWith("state=") }
+                        ?.substringAfter("state=")
+                        ?.let { java.net.URLDecoder.decode(it, Charsets.UTF_8.name()) }
+                        ?.takeIf { it.isNotBlank() }
+                }.getOrNull()
+                if (expectedState != null && parsed.state != expectedState) {
+                    return
+                }
                 workspaceViewModel.onAction(
                     WorkspaceAction.SubmitAuthCode(
-                        profileId = targetProfileId,
+                        profileId = awaiting.challenge.profileId,
                         code = parsed.code,
                     ),
                 )
             }
 
-            is OAuthIntentParseResult.Error -> {
-                deviceAdminStatusNote = parsed.message
-            }
-
+            is OAuthIntentParseResult.Error -> Unit
             OAuthIntentParseResult.NotOAuthIntent -> Unit
         }
     }

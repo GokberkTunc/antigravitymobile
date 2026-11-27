@@ -101,9 +101,6 @@ class AgentForegroundService : LifecycleService() {
     }
 
     override fun onDestroy() {
-        if (::killSwitchCoordinator.isInitialized) {
-            // Observation jobs are children of serviceScope and will be cancelled below.
-        }
         serviceScope.cancel("AgentForegroundService destroyed")
         super.onDestroy()
     }

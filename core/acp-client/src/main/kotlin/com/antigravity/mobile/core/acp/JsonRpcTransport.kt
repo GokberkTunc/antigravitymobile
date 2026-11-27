@@ -165,7 +165,7 @@ class JsonRpcTransport(
         val closeError = CancellationException("ACP JSON-RPC transport closed")
         failAllPending(closeError)
 
-        withContext(ioDispatcher) {
+        withContext(ioDispatcher + kotlinx.coroutines.NonCancellable) {
             runCatching { writer.close() }
             runCatching { process.destroy() }
             val exitedCleanly = runCatching {

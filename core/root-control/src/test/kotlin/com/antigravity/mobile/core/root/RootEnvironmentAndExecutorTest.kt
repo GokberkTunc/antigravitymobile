@@ -131,7 +131,7 @@ class RootEnvironmentAndExecutorTest {
         val repo = LibsuFileRepository(rootExecutor, unavailableGateway, dispatcher)
 
         val encoded = Base64.getEncoder().encodeToString("hello world!".toByteArray())
-        coEvery { rootExecutor.exec(match { it.startsWith("dd if='/sdcard/test.txt'") }, any(), any()) } returns
+        coEvery { rootExecutor.exec(match { it.contains("dd if='/sdcard/test.txt'") }, any(), any()) } returns
             ShellResult(0, encoded, "")
         val read = repo.readFile("/sdcard/test.txt", offset = 0, limit = 5).getOrThrow()
         assertEquals("hello", read.content)

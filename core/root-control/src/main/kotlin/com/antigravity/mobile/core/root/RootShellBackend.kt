@@ -115,8 +115,8 @@ class LibsuShellBackend(
 
     private suspend fun submitLibsuCommand(command: String): ShellResult =
         suspendCancellableCoroutine { continuation ->
-            val stdoutLines = ArrayList<String>()
-            val stderrLines = ArrayList<String>()
+            val stdoutLines = BoundedOutputList(MAX_OUTPUT_LINES)
+            val stderrLines = BoundedOutputList(MAX_OUTPUT_LINES)
             Shell.cmd(command)
                 .to(stdoutLines, stderrLines)
                 .submit { res ->
@@ -133,7 +133,15 @@ class LibsuShellBackend(
                 }
         }
 
+    private class BoundedOutputList(private val maxLines: Int) : ArrayList<String>() {
+        override fun add(element: String): Boolean {
+            if (size >= maxLines) return false
+            return super.add(element)
+        }
+    }
+
     companion object {
+        private const val MAX_OUTPUT_LINES = 10_000
         private val shellInitialized = AtomicBoolean(false)
     }
 }

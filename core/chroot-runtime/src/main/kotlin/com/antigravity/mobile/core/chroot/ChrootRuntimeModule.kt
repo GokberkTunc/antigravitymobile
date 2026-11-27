@@ -9,8 +9,6 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import java.io.File
@@ -20,10 +18,6 @@ import javax.inject.Singleton
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class ChrootIoDispatcher
-
-@Qualifier
-@Retention(AnnotationRetention.BINARY)
-annotation class ChrootHttpClient
 
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
@@ -59,11 +53,6 @@ object ChrootRuntimeProvidesModule {
     @Provides
     @ChrootIoDispatcher
     fun provideIoDispatcher(): CoroutineDispatcher = Dispatchers.IO
-
-    @Provides
-    @Singleton
-    @ChrootHttpClient
-    fun provideChrootHttpClient(): HttpClient = HttpClient(CIO)
 
     @Provides
     @Singleton

@@ -135,6 +135,6 @@ class AndroidTaskDispatchBackend(
 
         fun uniqueWorkName(taskId: String): String = "ag_scheduled_task_$taskId"
 
-        fun alarmRequestCode(taskId: String): Int = 50_000 + (taskId.hashCode() and 0x7FFF)
+        fun alarmRequestCode(taskId: String): Int = 50_000 + (taskId.hashCode() and 0x3FFF_FFFF)
     }
 }

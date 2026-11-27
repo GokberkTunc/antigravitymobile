@@ -141,26 +141,35 @@ object DestructiveCommandDetector {
     )
 
     fun detect(command: String): DetectionMatch? {
-        val normalized = command.trim()
-        if (normalized.isEmpty()) return null
+        val raw = command.trim()
+        if (raw.isEmpty()) return null
+        val normalized = raw
+            .replace("\"", "")
+            .replace("'", "")
+            .replace(Regex("/+"), "/")
+        val candidates = if (normalized == raw) listOf(raw) else listOf(raw, normalized)
 
-        for (rule in forbiddenRules) {
-            if (rule.regex.containsMatchIn(normalized)) {
-                return DetectionMatch(
-                    severity = rule.severity,
-                    patternName = rule.name,
-                    reason = rule.reason,
-                )
+        for (candidate in candidates) {
+            for (rule in forbiddenRules) {
+                if (rule.regex.containsMatchIn(candidate)) {
+                    return DetectionMatch(
+                        severity = rule.severity,
+                        patternName = rule.name,
+                        reason = rule.reason,
+                    )
+                }
             }
         }
 
-        for (rule in destructiveRules) {
-            if (rule.regex.containsMatchIn(normalized)) {
-                return DetectionMatch(
-                    severity = rule.severity,
-                    patternName = rule.name,
-                    reason = rule.reason,
-                )
+        for (candidate in candidates) {
+            for (rule in destructiveRules) {
+                if (rule.regex.containsMatchIn(candidate)) {
+                    return DetectionMatch(
+                        severity = rule.severity,
+                        patternName = rule.name,
+                        reason = rule.reason,
+                    )
+                }
             }
         }
 

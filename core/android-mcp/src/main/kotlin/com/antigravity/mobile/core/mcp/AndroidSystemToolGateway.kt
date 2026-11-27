@@ -123,6 +123,7 @@ class PlatformAndroidSystemToolGateway(
             val safeScale = scale.coerceIn(0.1, 1.0)
             val normalizedFormat = if (format.equals("png", ignoreCase = true)) "png" else "webp"
             val captureDir = File(context.cacheDir, "mcp_captures").apply { mkdirs() }
+            pruneOldCacheFiles(captureDir, maxKeep = 20)
             val rawFile = File(captureDir, "raw_${System.currentTimeMillis()}.png")
             val outFile = File(captureDir, "cap_${System.currentTimeMillis()}.$normalizedFormat")
 
@@ -774,11 +775,17 @@ class PlatformAndroidSystemToolGateway(
 
             "take_photo" -> {
                 val captureDir = File(context.cacheDir, "mcp_media").apply { mkdirs() }
+                pruneOldCacheFiles(captureDir, maxKeep = 20)
                 val photoFile = File(captureDir, "photo_${System.currentTimeMillis()}.jpg")
+                val photoUri = androidx.core.content.FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    photoFile,
+                )
                 val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                     putExtra("android.intent.extras.CAMERA_FACING", if (lens.equals("front", true)) 1 else 0)
-                    putExtra(MediaStore.EXTRA_OUTPUT, Uri.fromFile(photoFile))
+                    putExtra(MediaStore.EXTRA_OUTPUT, photoUri)
                 }
                 context.startActivity(intent)
                 buildJsonObject {
@@ -799,6 +806,7 @@ class PlatformAndroidSystemToolGateway(
                 ).coerceAtLeast(3200)
 
                 val captureDir = File(context.cacheDir, "mcp_media").apply { mkdirs() }
+                pruneOldCacheFiles(captureDir, maxKeep = 20)
                 val outFile = File(captureDir, "audio_${System.currentTimeMillis()}.pcm")
 
                 val recorder = AudioRecord(
@@ -874,6 +882,14 @@ class PlatformAndroidSystemToolGateway(
         }
         latch.await(3, TimeUnit.SECONDS)
         return result
+    }
+
+    private fun pruneOldCacheFiles(dir: File, maxKeep: Int) {
+        val files = dir.listFiles()?.filter { it.isFile } ?: return
+        if (files.size <= maxKeep) return
+        files.sortedByDescending { it.lastModified() }
+            .drop(maxKeep)
+            .forEach { runCatching { it.delete() } }
     }
 
     companion object {

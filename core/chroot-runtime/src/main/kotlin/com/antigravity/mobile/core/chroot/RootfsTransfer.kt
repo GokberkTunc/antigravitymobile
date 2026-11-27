@@ -2,7 +2,6 @@ package com.antigravity.mobile.core.chroot
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
-import io.ktor.client.HttpClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -101,8 +100,7 @@ interface RootfsDownloader {
  * incompatibility with `<domain-config>` entries in Android `network_security_config.xml`.
  */
 class KtorRootfsDownloader @Inject constructor(
-    @ChrootHttpClient private val httpClient: HttpClient,
-    @ChrootIoDispatcher private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    @ChrootIoDispatcher private val ioDispatcher: CoroutineDispatcher,
 ) : RootfsDownloader {
 
     override suspend fun download(

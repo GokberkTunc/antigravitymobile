@@ -246,6 +246,19 @@ class DefaultAccountRepository(
     ): Result<AccountProfile> {
         return when (val parsed = OAuthCallbackParser.parse(callbackUri)) {
             is OAuthCallbackResult.Success -> {
+                val expectedState = repoMutex.withLock {
+                    activeChallenges[profileId]?.authUrl?.let { authUrl ->
+                        runCatching {
+                            val rawQuery = java.net.URI(authUrl).rawQuery
+                            OAuthUrlExtractor.parseQueryParams(rawQuery)["state"]
+                        }.getOrNull()
+                    }
+                }
+                if (!expectedState.isNullOrBlank() && parsed.state != expectedState) {
+                    val reason = "Google OAuth state mismatch"
+                    _authFlowState.value = AuthFlowState.Failed(profileId, reason)
+                    return Result.failure(SecurityException(reason))
+                }
                 if (parsed.port != null) {
                     repoMutex.withLock {
                         val existing = activeChallenges[profileId]
