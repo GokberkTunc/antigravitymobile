@@ -180,6 +180,10 @@ class DefaultChrootManager(
                     val qBinary = PosixShellQuoting.quote(agyBinaryPath)
                     val installScript = buildString {
                         append("set -e; ")
+                        append("if (! command -v curl >/dev/null 2>&1 || [ ! -f /etc/ssl/certs/ca-certificates.crt ]) && command -v apt-get >/dev/null 2>&1; then ")
+                        append("DEBIAN_FRONTEND=noninteractive apt-get update -qq && ")
+                        append("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl netcat-openbsd; ")
+                        append("fi; ")
                         append("curl -fsSL https://antigravity.google/cli/install.sh | bash; ")
                         append("FOUND=''; ")
                         append("for candidate in ")
@@ -196,7 +200,8 @@ class DefaultChrootManager(
                     }
 
                     val cmd = "chroot $qRootfs /usr/bin/env -i " +
-                        "HOME=/root PATH=/usr/local/bin:/usr/bin:/bin:/root/.local/bin:/root/.agy/bin " +
+                        "HOME=/root DEBIAN_FRONTEND=noninteractive " +
+                        "PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin:/root/.agy/bin " +
                         "/bin/bash -c ${PosixShellQuoting.quote(installScript)}"
 
                     val execRes = rootExecutor.exec(cmd, timeoutMs = 300_000L)
