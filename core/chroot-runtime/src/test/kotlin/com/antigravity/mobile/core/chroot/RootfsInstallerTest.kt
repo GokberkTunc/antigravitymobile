@@ -61,6 +61,44 @@ class RootfsInstallerTest {
     }
 
     @Test
+    fun `bundled asset falls back to AAPT2 gunzipped tar and extracts with tar -xf`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val rootExecutor = mockk<RootExecutor>()
+        val downloader = mockk<RootfsDownloader>(relaxed = true)
+        val stagingDir = tempFolder.newFolder("staging_aapt2_tar")
+        val assetBytes = "uncompressed-tar-payload".toByteArray()
+        val assetProvider = object : AssetStreamProvider {
+            override fun openAsset(assetPath: String) =
+                if (assetPath == "rootfs/arm64-rootfs.tar") ByteArrayInputStream(assetBytes) else null
+        }
+
+        coEvery { rootExecutor.exec(any(), any(), any()) } returns ShellResult(exitCode = 0, stdout = "", stderr = "")
+
+        val installer = DefaultRootfsInstaller(
+            rootExecutor = rootExecutor,
+            assetStreamProvider = assetProvider,
+            downloader = downloader,
+            stagingDir = stagingDir,
+            ioDispatcher = dispatcher,
+        )
+
+        val result = installer.install(
+            source = RootfsSource.BundledAsset("rootfs/arm64-rootfs.tar.gz"),
+            rootfsPath = "/data/local/ag_rootfs",
+        )
+
+        assertTrue(result.isSuccess)
+        assertEquals(0, stagingDir.listFiles()?.size ?: 0)
+        coVerify {
+            rootExecutor.exec(
+                match { it.contains("tar -xf") && it.contains("bundled-arm64-rootfs.tar") },
+                any(),
+                any(),
+            )
+        }
+    }
+
+    @Test
     fun `missing bundled asset fails with BundledAssetNotFoundException`() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val rootExecutor = mockk<RootExecutor>(relaxed = true)

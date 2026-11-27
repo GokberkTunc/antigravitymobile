@@ -111,7 +111,7 @@ data class OnboardingUiState(
     val bootstrapReport: BootstrapReport? = null,
     val chrootState: ChrootState = ChrootState.NotInstalled,
     val selectedRootfsSource: RootfsSourceOption = RootfsSourceOption.BUNDLED_ASSET,
-    val remoteRootfsUrl: String = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.1-base-arm64.tar.gz",
+    val remoteRootfsUrl: String = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-arm64.tar.gz",
     val localRootfsPath: String = "/sdcard/Download/arm64-rootfs.tar.gz",
     val agyVersion: String? = null,
     val isBusy: Boolean = false,

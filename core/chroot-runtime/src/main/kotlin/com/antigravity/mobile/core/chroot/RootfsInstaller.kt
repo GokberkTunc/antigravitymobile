@@ -56,13 +56,27 @@ class DefaultRootfsInstaller @Inject constructor(
 
         var tempArchive: File? = null
         try {
+            var isGzipped = true
             val archivePathToExtract: String = when (source) {
                 is RootfsSource.BundledAsset -> {
                     onProgress("Copying bundled ARM64 rootfs asset", 5)
-                    val assetStream = assetStreamProvider.openAsset(source.assetPath)
-                        ?: return@withContext Result.failure(BundledAssetNotFoundException(source.assetPath))
+                    // Android AAPT2 automatically gunzips `.gz` files placed in `assets/` and strips
+                    // the `.gz` suffix (e.g. `rootfs/arm64-rootfs.tar.gz` -> `rootfs/arm64-rootfs.tar`).
+                    val directStream = assetStreamProvider.openAsset(source.assetPath)
+                    val (assetStream, resolvedPath) = if (directStream != null) {
+                        directStream to source.assetPath
+                    } else if (source.assetPath.endsWith(".gz", ignoreCase = true)) {
+                        val strippedPath = source.assetPath.removeSuffix(".gz")
+                        val strippedStream = assetStreamProvider.openAsset(strippedPath)
+                            ?: return@withContext Result.failure(BundledAssetNotFoundException(source.assetPath))
+                        strippedStream to strippedPath
+                    } else {
+                        return@withContext Result.failure(BundledAssetNotFoundException(source.assetPath))
+                    }
+                    isGzipped = !resolvedPath.endsWith(".tar", ignoreCase = true)
                     stagingDir.mkdirs()
-                    val staged = File(stagingDir, "bundled-arm64-rootfs.tar.gz")
+                    val stagedName = if (isGzipped) "bundled-arm64-rootfs.tar.gz" else "bundled-arm64-rootfs.tar"
+                    val staged = File(stagingDir, stagedName)
                     tempArchive = staged
                     assetStream.use { input ->
                         FileOutputStream(staged).use { output ->
@@ -93,11 +107,13 @@ class DefaultRootfsInstaller @Inject constructor(
                             )
                         }
                     }
+                    isGzipped = !source.url.substringBefore('?').endsWith(".tar", ignoreCase = true)
                     staged.absolutePath
                 }
 
                 is RootfsSource.LocalFile -> {
                     val cleanLocal = PosixShellQuoting.validateAbsolutePath(source.absolutePath, "localFilePath")
+                    isGzipped = !cleanLocal.endsWith(".tar", ignoreCase = true)
                     onProgress("Validating local rootfs archive", 10)
                     val localFile = File(cleanLocal)
                     if (localFile.exists() && localFile.canRead()) {
@@ -135,7 +151,7 @@ class DefaultRootfsInstaller @Inject constructor(
             }
 
             onProgress("Extracting ARM64 glibc rootfs", 65)
-            extractArchive(archivePathToExtract, cleanRootfs)
+            extractArchive(archivePathToExtract, cleanRootfs, isGzipped)
 
             onProgress("Initializing rootfs directories", 90)
             initializeDirectories(cleanRootfs)
@@ -157,10 +173,15 @@ class DefaultRootfsInstaller @Inject constructor(
         }
     }
 
-    private suspend fun extractArchive(archivePath: String, rootfsPath: String) {
+    private suspend fun extractArchive(
+        archivePath: String,
+        rootfsPath: String,
+        isGzipped: Boolean = true,
+    ) {
         val qArchive = PosixShellQuoting.quote(archivePath)
         val qRootfs = PosixShellQuoting.quote(rootfsPath)
-        val cmd = "mkdir -p $qRootfs && chmod 755 $qRootfs && tar -xzf $qArchive -C $qRootfs"
+        val tarFlag = if (isGzipped) "-xzf" else "-xf"
+        val cmd = "mkdir -p $qRootfs && chmod 755 $qRootfs && tar $tarFlag $qArchive -C $qRootfs"
         val result = rootExecutor.exec(command = cmd, timeoutMs = 300_000L)
         if (!result.isSuccess) {
             throw IOException(

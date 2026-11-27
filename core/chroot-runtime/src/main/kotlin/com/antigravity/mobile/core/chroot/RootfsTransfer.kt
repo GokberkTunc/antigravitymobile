@@ -3,11 +3,6 @@ package com.antigravity.mobile.core.chroot
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.HttpClient
-import io.ktor.client.request.prepareGet
-import io.ktor.client.statement.bodyAsChannel
-import io.ktor.http.contentLength
-import io.ktor.http.isSuccess
-import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -17,7 +12,9 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.net.HttpURLConnection
 import java.net.URI
+import java.net.URL
 import java.security.MessageDigest
 import javax.inject.Inject
 
@@ -98,6 +95,11 @@ interface RootfsDownloader {
     ): Result<File>
 }
 
+/**
+ * Downloads remote rootfs archives using Android's native [HttpURLConnection] / Conscrypt TLS
+ * stack (hostname-aware `X509ExtendedTrustManager`), avoiding Ktor CIO's 2-arg `checkServerTrusted`
+ * incompatibility with `<domain-config>` entries in Android `network_security_config.xml`.
+ */
 class KtorRootfsDownloader @Inject constructor(
     @ChrootHttpClient private val httpClient: HttpClient,
     @ChrootIoDispatcher private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -109,30 +111,55 @@ class KtorRootfsDownloader @Inject constructor(
         onProgress: (percent: Int?) -> Unit,
     ): Result<File> = withContext(ioDispatcher) {
         try {
-            validateDownloadUrl(url)
             destination.parentFile?.mkdirs()
-            httpClient.prepareGet(url).execute { response ->
-                if (!response.status.isSuccess()) {
-                    throw IOException("Rootfs download failed with HTTP ${response.status.value}")
+            var currentUrl = url
+            var redirects = 0
+            while (true) {
+                validateDownloadUrl(currentUrl)
+                val connection = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    instanceFollowRedirects = false
+                    connectTimeout = 30_000
+                    readTimeout = 60_000
+                    setRequestProperty("Accept-Encoding", "identity")
                 }
-                val totalBytes = response.contentLength() ?: -1L
-                val channel = response.bodyAsChannel()
-                var downloaded = 0L
-                val buffer = ByteArray(64 * 1024)
-                FileOutputStream(destination).use { output ->
-                    while (!channel.isClosedForRead) {
-                        val bytesRead = channel.readAvailable(buffer, 0, buffer.size)
-                        if (bytesRead <= 0) break
-                        output.write(buffer, 0, bytesRead)
-                        downloaded += bytesRead
-                        if (totalBytes > 0L) {
-                            val percent = ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100)
-                            onProgress(percent)
-                        } else {
-                            onProgress(null)
+                try {
+                    val statusCode = connection.responseCode
+                    if (statusCode in 301..303 || statusCode == 307 || statusCode == 308) {
+                        val location = connection.getHeaderField("Location")
+                            ?: throw IOException("Redirect (HTTP $statusCode) missing Location header")
+                        if (++redirects > MAX_REDIRECTS) {
+                            throw IOException("Too many redirects while downloading rootfs")
+                        }
+                        currentUrl = URI(currentUrl).resolve(location).toString()
+                        continue
+                    }
+                    if (statusCode !in 200..299) {
+                        throw IOException("Rootfs download failed with HTTP $statusCode")
+                    }
+                    val totalBytes = connection.contentLengthLong
+                    var downloaded = 0L
+                    val buffer = ByteArray(64 * 1024)
+                    connection.inputStream.use { input ->
+                        FileOutputStream(destination).use { output ->
+                            while (true) {
+                                val bytesRead = input.read(buffer)
+                                if (bytesRead <= 0) break
+                                output.write(buffer, 0, bytesRead)
+                                downloaded += bytesRead
+                                if (totalBytes > 0L) {
+                                    val percent = ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100)
+                                    onProgress(percent)
+                                } else {
+                                    onProgress(null)
+                                }
+                            }
+                            output.flush()
                         }
                     }
-                    output.flush()
+                    break
+                } finally {
+                    connection.disconnect()
                 }
             }
             Result.success(destination)
@@ -146,6 +173,8 @@ class KtorRootfsDownloader @Inject constructor(
     }
 
     companion object {
+        private const val MAX_REDIRECTS = 5
+
         fun validateDownloadUrl(url: String) {
             val uri = try {
                 URI(url)
