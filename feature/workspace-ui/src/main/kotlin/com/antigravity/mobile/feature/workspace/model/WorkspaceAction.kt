@@ -28,7 +28,7 @@ sealed interface WorkspaceAction {
     data class ChangeVoiceLocale(val localeTag: String) : WorkspaceAction
 
     // Accounts & OAuth
-    data class CreateProfile(val displayName: String, val email: String? = null) : WorkspaceAction
+    data class AddGoogleAccount(val label: String? = null) : WorkspaceAction
     data class SwitchProfile(val profileId: String) : WorkspaceAction
     data class StartOAuthLogin(val profileId: String, val capturedAuthUrl: String? = null) : WorkspaceAction
     data class SubmitAuthCode(val profileId: String, val code: String) : WorkspaceAction

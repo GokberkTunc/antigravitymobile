@@ -903,7 +903,6 @@ fun QuotaDetailBottomSheet(
 
     val extendedColors = LocalAntigravityColors.current
     val colorScheme = MaterialTheme.colorScheme
-    var showAddAccountDialog by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val sheetCardColor = if (extendedColors.isDark) {
         colorScheme.surfaceContainer
@@ -1096,7 +1095,10 @@ fun QuotaDetailBottomSheet(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedButton(
-                    onClick = { showAddAccountDialog = true },
+                    onClick = {
+                        onAction(WorkspaceAction.CloseQuotaSheet)
+                        onAction(WorkspaceAction.AddGoogleAccount())
+                    },
                     modifier = Modifier.weight(1f),
                 ) {
                     Text("+ Hesap Ekle")
@@ -1120,66 +1122,4 @@ fun QuotaDetailBottomSheet(
             }
         }
     }
-
-    if (showAddAccountDialog) {
-        AddGoogleAccountDialog(
-            onDismiss = { showAddAccountDialog = false },
-            onConfirm = { name, email ->
-                onAction(WorkspaceAction.CreateProfile(name, email))
-                showAddAccountDialog = false
-            },
-        )
-    }
-}
-
-@Composable
-internal fun AddGoogleAccountDialog(
-    onDismiss: () -> Unit,
-    onConfirm: (displayName: String, email: String?) -> Unit,
-) {
-    var displayName by remember { mutableStateOf("") }
-    var email by remember { mutableStateOf("") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Yeni Google Hesabı Ekle") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Her hesap chroot içinde tamamen izole HOME ve ~/.gemini diziniyle çalışır.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = displayName,
-                    onValueChange = { displayName = it },
-                    label = { Text("Profil Adı") },
-                    placeholder = { Text("Örn: İş Hesabı") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = { Text("E-posta (İsteğe bağlı)") },
-                    placeholder = { Text("kullanici@gmail.com") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onConfirm(displayName.trim(), email.trim().ifBlank { null }) },
-                enabled = displayName.isNotBlank(),
-            ) {
-                Text("Oluştur")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("İptal")
-            }
-        },
-    )
 }

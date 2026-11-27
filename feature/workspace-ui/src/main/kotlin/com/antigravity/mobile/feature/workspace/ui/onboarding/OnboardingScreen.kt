@@ -125,8 +125,6 @@ fun OnboardingScreen(
     val effectiveDeviceAdminActive = isDeviceAdminActive || onboarding.isDeviceAdminActive
     val effectiveOverlayGranted = onboarding.isOverlayPermissionGranted || canDrawOverlaysSafe(context)
 
-    var showAddAnotherAccount by remember { mutableStateOf(false) }
-    var newProfileName by remember { mutableStateOf("") }
     var showAdvancedAuth by remember { mutableStateOf(false) }
     var manualAuthCode by remember { mutableStateOf("") }
     var desktopImportPath by remember { mutableStateOf("/sdcard/Download/gemini-profile.tar.gz") }
@@ -876,49 +874,23 @@ fun OnboardingScreen(
                         }
                     }
 
-                    TextButton(
-                        onClick = { showAddAnotherAccount = !showAddAnotherAccount },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                    OutlinedButton(
+                        onClick = { onAction(WorkspaceAction.AddGoogleAccount()) },
+                        enabled = authState !is AuthFlowState.Starting &&
+                            authState !is AuthFlowState.SubmittingCode &&
+                            !onboarding.isAutoFixingAll,
+                        shape = RoundedCornerShape(10.dp),
                     ) {
+                        Icon(
+                            imageVector = Icons.Default.AccountCircle,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (showAddAnotherAccount) "Farklı Hesap Ekleme Panelini Gizle" else "Farklı Hesap Ekle",
+                            text = "Farklı Google Hesabı Ekle",
                             style = MaterialTheme.typography.labelLarge,
                         )
-                    }
-
-                    AnimatedVisibility(
-                        visible = showAddAnotherAccount,
-                        enter = expandVertically() + fadeIn(),
-                        exit = shrinkVertically() + fadeOut(),
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                OutlinedTextField(
-                                    value = newProfileName,
-                                    onValueChange = { newProfileName = it },
-                                    label = { Text("Yeni hesap etiketi (ör. İş)") },
-                                    modifier = Modifier.weight(1f),
-                                    singleLine = true,
-                                )
-                                FilledTonalButton(
-                                    onClick = {
-                                        val label = newProfileName.trim()
-                                        if (label.isNotEmpty()) {
-                                            onAction(WorkspaceAction.CreateProfile(label, null))
-                                            newProfileName = ""
-                                        }
-                                    },
-                                    enabled = newProfileName.isNotBlank() && !onboarding.isBusy,
-                                    shape = RoundedCornerShape(10.dp),
-                                ) {
-                                    Text("Ekle")
-                                }
-                            }
-                        }
                     }
                 } else {
                     Text(

@@ -1748,4 +1748,43 @@ class WorkspaceViewModelTest {
         assertTrue(rendered.text.contains("dagflow"))
         assertTrue(rendered.text.contains("kapanmamış"))
     }
+
+    @Test
+    fun `AddGoogleAccount creates a fresh isolated profile and immediately starts Google OAuth flow`() = runTest {
+        val newProfile = primaryProfile.copy(
+            id = "prof-new-google",
+            displayName = WorkspaceViewModel.DEFAULT_QUICK_PROFILE_NAME,
+            email = null,
+            isAuthenticated = false,
+        )
+        chrootStateFlow.value = ChrootState.Mounted(
+            agyVersion = "1.5.18",
+            mountStatus = MountStatus(
+                procMounted = true,
+                sysMounted = true,
+                devMounted = true,
+                devPtsMounted = true,
+                sdcardMounted = true,
+                profilesMounted = true,
+            ),
+        )
+        coEvery { accountRepository.createProfile(WorkspaceViewModel.DEFAULT_QUICK_PROFILE_NAME, null) } returns
+            Result.success(newProfile)
+        coEvery { accountRepository.switchActiveProfile(newProfile.id) } returns Result.success(newProfile)
+        coEvery { accountRepository.startLoginFlow(newProfile.id, null) } returns Result.success(
+            LoginChallenge(
+                profileId = newProfile.id,
+                authUrl = "https://accounts.google.com/o/oauth2/auth?state=xyz",
+            ),
+        )
+        advanceUntilIdle()
+
+        viewModel.onAction(WorkspaceAction.AddGoogleAccount())
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { accountRepository.createProfile(WorkspaceViewModel.DEFAULT_QUICK_PROFILE_NAME, null) }
+        coVerify(exactly = 1) { accountRepository.switchActiveProfile(newProfile.id) }
+        coVerify(exactly = 1) { accountRepository.startLoginFlow(newProfile.id, null) }
+        assertEquals("https://accounts.google.com/o/oauth2/auth?state=xyz", viewModel.uiState.value.pendingChromeCustomTabUrl)
+    }
 }

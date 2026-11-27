@@ -132,7 +132,6 @@ fun WorkspaceDrawerSheet(
     var automationsExpanded by remember { mutableStateOf(false) }
     var generalConversationsExpanded by remember { mutableStateOf(true) }
     var showAccountSwitcherDialog by remember { mutableStateOf(false) }
-    var showAddAccountDialog by remember { mutableStateOf(false) }
     var showImportDesktopDialog by remember { mutableStateOf(false) }
 
     val trimmedQuery = state.sidebarSearchQuery.trim()
@@ -616,7 +615,8 @@ fun WorkspaceDrawerSheet(
             },
             onOpenAddAccount = {
                 showAccountSwitcherDialog = false
-                showAddAccountDialog = true
+                onAction(WorkspaceAction.AddGoogleAccount())
+                onCloseDrawer()
             },
             onOpenDesktopImport = {
                 showAccountSwitcherDialog = false
@@ -626,16 +626,6 @@ fun WorkspaceDrawerSheet(
                 showAccountSwitcherDialog = false
                 onAction(WorkspaceAction.OpenSettingsDetail(SettingsCategory.ACCOUNTS_QUOTA))
                 onCloseDrawer()
-            },
-        )
-    }
-
-    if (showAddAccountDialog) {
-        AddAccountDialog(
-            onDismiss = { showAddAccountDialog = false },
-            onCreate = { name, email ->
-                onAction(WorkspaceAction.CreateProfile(name, email))
-                showAddAccountDialog = false
             },
         )
     }
@@ -2301,49 +2291,6 @@ private fun AccountSwitcherDialog(
             TextButton(onClick = onDismiss) {
                 Text("Kapat")
             }
-        },
-    )
-}
-
-@Composable
-private fun AddAccountDialog(
-    onDismiss: () -> Unit,
-    onCreate: (name: String, email: String?) -> Unit,
-) {
-    var name by remember { mutableStateOf("") }
-    var email by remember { mutableStateOf("") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Yeni Google Profili Ekle") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Profil Adı (ör. Kişisel / İş)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = { Text("Google E-posta (opsiyonel)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onCreate(name.trim(), email.trim().ifBlank { null }) },
-                enabled = name.isNotBlank(),
-            ) {
-                Text("Oluştur")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("İptal") }
         },
     )
 }

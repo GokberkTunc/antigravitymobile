@@ -170,7 +170,7 @@ class WorkspaceViewModel @Inject constructor(
             WorkspaceAction.TriggerEmergencyStop -> handleEmergencyStop()
             WorkspaceAction.ToggleVoiceListening -> handleToggleVoice()
             is WorkspaceAction.ChangeVoiceLocale -> _uiState.update { it.copy(voiceLocaleTag = action.localeTag) }
-            is WorkspaceAction.CreateProfile -> handleCreateProfile(action.displayName, action.email)
+            is WorkspaceAction.AddGoogleAccount -> launchGoogleSignIn(forceNewProfile = true, label = action.label)
             is WorkspaceAction.SwitchProfile -> handleSwitchProfile(action.profileId)
             is WorkspaceAction.StartOAuthLogin -> handleStartOAuthLogin(action.profileId, action.capturedAuthUrl)
             is WorkspaceAction.SubmitAuthCode -> handleSubmitAuthCode(action.profileId, action.code)
@@ -297,7 +297,7 @@ class WorkspaceViewModel @Inject constructor(
                 )
             }
 
-            WorkspaceAction.QuickGoogleSignIn -> handleQuickGoogleSignIn()
+            WorkspaceAction.QuickGoogleSignIn -> launchGoogleSignIn(forceNewProfile = false, label = null)
             is WorkspaceAction.HandleClipboardAuthText -> handleClipboardAuthText(action.rawText, action.autoSubmit)
             WorkspaceAction.ClearClipboardAuthHint -> _uiState.update { state ->
                 state.copy(onboarding = state.onboarding.copy(clipboardAutoAuthHint = null))
@@ -1045,25 +1045,6 @@ class WorkspaceViewModel @Inject constructor(
                 }
             }.onFailure { error ->
                 _uiState.update { it.copy(errorMessage = error.message ?: "Sesli dikte hatası") }
-            }
-        }
-    }
-
-    private fun handleCreateProfile(displayName: String, email: String?) {
-        val cleanName = displayName.trim()
-        if (cleanName.isEmpty()) return
-        viewModelScope.launch {
-            runSuspendCatching {
-                val created = accountRepository.createProfile(cleanName, email?.trim()?.ifBlank { null }).getOrThrow()
-                accountRepository.switchActiveProfile(created.id).getOrThrow()
-                created
-            }.onSuccess { created ->
-                appendSystemMessage(
-                    content = "Yeni profil oluşturuldu ve etkinleştirildi: ${created.displayName}",
-                    onlyIfConversationActive = true,
-                )
-            }.onFailure { error ->
-                _uiState.update { it.copy(errorMessage = error.message ?: "Profil oluşturulamadı") }
             }
         }
     }
@@ -2806,18 +2787,27 @@ class WorkspaceViewModel @Inject constructor(
         }
     }
 
-    private fun handleQuickGoogleSignIn() {
+    private fun launchGoogleSignIn(
+        forceNewProfile: Boolean,
+        label: String?,
+    ) {
         viewModelScope.launch {
             runSuspendCatching {
                 val currentState = _uiState.value
-                val targetProfile = currentState.activeProfile
-                    ?: currentState.profiles.firstOrNull()?.let { existing ->
-                        accountRepository.switchActiveProfile(existing.id).getOrThrow()
-                    }
-                    ?: run {
-                        val created = accountRepository.createProfile(DEFAULT_QUICK_PROFILE_NAME, null).getOrThrow()
-                        accountRepository.switchActiveProfile(created.id).getOrThrow()
-                    }
+                val profileName = label?.trim()?.ifBlank { null } ?: DEFAULT_QUICK_PROFILE_NAME
+                val targetProfile = if (forceNewProfile) {
+                    val created = accountRepository.createProfile(profileName, null).getOrThrow()
+                    accountRepository.switchActiveProfile(created.id).getOrThrow()
+                } else {
+                    currentState.activeProfile
+                        ?: currentState.profiles.firstOrNull()?.let { existing ->
+                            accountRepository.switchActiveProfile(existing.id).getOrThrow()
+                        }
+                        ?: run {
+                            val created = accountRepository.createProfile(profileName, null).getOrThrow()
+                            accountRepository.switchActiveProfile(created.id).getOrThrow()
+                        }
+                }
 
                 _uiState.update { state ->
                     val alreadyListed = state.profiles.any { it.id == targetProfile.id }

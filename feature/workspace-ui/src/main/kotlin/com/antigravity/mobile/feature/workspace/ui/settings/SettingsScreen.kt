@@ -875,7 +875,6 @@ private fun AccountsQuotaSettingsContent(
 ) {
     val extendedColors = LocalAntigravityColors.current
     val colorScheme = MaterialTheme.colorScheme
-    var showAddAccountDialog by remember { mutableStateOf(false) }
     var showImportDesktopDialog by remember { mutableStateOf(false) }
     var profilePendingDeletion by remember { mutableStateOf<AccountProfile?>(null) }
     var manualAuthCode by remember { mutableStateOf("") }
@@ -905,10 +904,10 @@ private fun AccountsQuotaSettingsContent(
                 Text("Tüm Kotaları Yenile")
             }
 
-            FilledTonalButton(onClick = { showAddAccountDialog = true }) {
+            FilledTonalButton(onClick = { onAction(WorkspaceAction.AddGoogleAccount()) }) {
                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Yeni Google Hesabı")
+                Text("Google Hesabı Ekle")
             }
 
             OutlinedButton(onClick = { showImportDesktopDialog = true }) {
@@ -1021,16 +1020,6 @@ private fun AccountsQuotaSettingsContent(
                 }
             }
         }
-    }
-
-    if (showAddAccountDialog) {
-        AddGoogleAccountDialog(
-            onDismiss = { showAddAccountDialog = false },
-            onConfirm = { name, email ->
-                onAction(WorkspaceAction.CreateProfile(name, email))
-                showAddAccountDialog = false
-            },
-        )
     }
 
     if (showImportDesktopDialog) {
