@@ -118,7 +118,31 @@ data class OnboardingUiState(
     val statusMessage: String? = null,
     val errorMessage: String? = null,
     val isCompleted: Boolean = false,
-)
+    val diagnosticsChecked: Boolean = false,
+    val isRunningDiagnostics: Boolean = false,
+    val isAutoFixingAll: Boolean = false,
+    val autoFixStageLabel: String? = null,
+    val isOverlayPermissionGranted: Boolean = false,
+    val isDeviceAdminActive: Boolean = false,
+    val chrootDependenciesReady: Boolean = false,
+    val chrootCurlInstalled: Boolean = false,
+    val chrootCaCertsInstalled: Boolean = false,
+    val chrootNetcatInstalled: Boolean = false,
+    val clipboardAutoAuthHint: String? = null,
+    val lastAutoSubmittedClipboardCode: String? = null,
+) {
+    val isRootReady: Boolean
+        get() = rootEnvironment?.isRootGranted == true
+
+    val isPermissionsReady: Boolean
+        get() = bootstrapReport?.allCriticalReady == true
+
+    val isChrootMounted: Boolean
+        get() = chrootState is ChrootState.Mounted
+
+    val isAgyReady: Boolean
+        get() = !agyVersion.isNullOrBlank() && chrootDependenciesReady
+}
 
 data class WorkspaceUiState(
     val profiles: List<AccountProfile> = emptyList(),
@@ -193,6 +217,29 @@ data class WorkspaceUiState(
 
     val activeConversation: WorkspaceConversation?
         get() = activeConversationId?.let { id -> conversations.firstOrNull { it.id == id } }
+
+    val setupReadyCount: Int
+        get() = listOf(
+            onboarding.isRootReady,
+            onboarding.isPermissionsReady,
+            onboarding.isChrootMounted,
+            onboarding.isAgyReady,
+            activeProfile?.isAuthenticated == true,
+        ).count { it }
+
+    val setupTotalSteps: Int
+        get() = 5
+
+    val isSetupFullyReady: Boolean
+        get() = setupReadyCount == setupTotalSteps
+
+    val hasMissingCriticalSetup: Boolean
+        get() = onboarding.diagnosticsChecked && (
+            !onboarding.isRootReady ||
+                !onboarding.isChrootMounted ||
+                onboarding.agyVersion.isNullOrBlank() ||
+                activeProfile?.isAuthenticated != true
+            )
 }
 
 val DEVICE_FALLBACK_PROJECT = WorkspaceProject(

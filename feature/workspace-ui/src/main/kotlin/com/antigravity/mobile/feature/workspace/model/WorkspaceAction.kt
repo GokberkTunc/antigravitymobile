@@ -132,6 +132,29 @@ sealed interface WorkspaceAction {
     data object CheckOrInstallAgy : WorkspaceAction
     data object CompleteOnboarding : WorkspaceAction
 
+    // Self-Healing Diagnostics, Auto-Fix & Effortless Auth
+    data class RunFullDiagnostics(
+        val packageName: String,
+        val isOverlayGranted: Boolean = false,
+        val isDeviceAdminActive: Boolean = false,
+    ) : WorkspaceAction
+
+    data class AutoFixAllPrerequisites(val packageName: String) : WorkspaceAction
+
+    data class SyncAndroidSetupStatus(
+        val isOverlayGranted: Boolean,
+        val isDeviceAdminActive: Boolean,
+    ) : WorkspaceAction
+
+    data object QuickGoogleSignIn : WorkspaceAction
+
+    data class HandleClipboardAuthText(
+        val rawText: String,
+        val autoSubmit: Boolean = true,
+    ) : WorkspaceAction
+
+    data object ClearClipboardAuthHint : WorkspaceAction
+
     // Misc
     data object DismissError : WorkspaceAction
 }

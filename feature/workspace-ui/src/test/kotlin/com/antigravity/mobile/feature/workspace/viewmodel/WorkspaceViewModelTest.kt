@@ -28,9 +28,11 @@ import com.antigravity.mobile.contracts.ProfilePaths
 import com.antigravity.mobile.contracts.RootEnvironmentInfo
 import com.antigravity.mobile.contracts.RootExecutor
 import com.antigravity.mobile.contracts.RootProviderType
+import com.antigravity.mobile.contracts.RootfsSource
 import com.antigravity.mobile.contracts.ScheduledTask
 import com.antigravity.mobile.contracts.ScheduledTaskRun
 import com.antigravity.mobile.contracts.SecurityPolicyEngine
+import com.antigravity.mobile.contracts.ShellResult
 import com.antigravity.mobile.contracts.SwarmBoardMessage
 import com.antigravity.mobile.contracts.SwarmBoardState
 import com.antigravity.mobile.contracts.SwarmInteractionEdge
@@ -52,6 +54,7 @@ import com.antigravity.mobile.feature.workspace.model.RootfsSourceOption
 import com.antigravity.mobile.feature.workspace.model.SettingsCategory
 import com.antigravity.mobile.feature.workspace.model.WorkspaceAction
 import java.io.File
+import java.io.FileNotFoundException
 import java.nio.file.Files
 import java.time.Instant
 import io.mockk.coEvery
@@ -1258,5 +1261,334 @@ class WorkspaceViewModelTest {
                 ),
             )
         }
+    }
+
+    @Test
+    fun `RunFullDiagnostics populates root, live permissions, chroot deps, and setupReadyCount`() = runTest {
+        val pkg = "com.antigravity.mobile"
+        val rootEnv = RootEnvironmentInfo(
+            isRootGranted = true,
+            provider = RootProviderType.KERNEL_SU,
+            suVersion = "KernelSU 1.0",
+            mountMasterSupported = true,
+        )
+        coEvery { rootExecutor.detectEnvironment() } returns rootEnv
+        coEvery { rootExecutor.exec("appops get $pkg ACCESS_RESTRICTED_SETTINGS", any(), any()) } returns ShellResult(
+            exitCode = 0,
+            stdout = "Uid mode: ACCESS_RESTRICTED_SETTINGS: allow",
+            stderr = "",
+        )
+        coEvery { rootExecutor.exec("settings get secure enabled_accessibility_services", any(), any()) } returns ShellResult(
+            exitCode = 0,
+            stdout = "$pkg/.service.AntigravityAccessibilityService",
+            stderr = "",
+        )
+        coEvery { rootExecutor.exec("settings get secure enabled_notification_listeners", any(), any()) } returns ShellResult(
+            exitCode = 0,
+            stdout = "$pkg/.service.AntigravityNotificationListener",
+            stderr = "",
+        )
+        coEvery { rootExecutor.exec("dumpsys deviceidle whitelist", any(), any()) } returns ShellResult(
+            exitCode = 0,
+            stdout = "user,$pkg,10234",
+            stderr = "",
+        )
+        coEvery { rootExecutor.exec(match { it.contains("command -v curl") && it.contains("ca-certificates.crt") }, any(), any()) } returns ShellResult(
+            exitCode = 0,
+            stdout = "CURL\nCERTS\nNC\n",
+            stderr = "",
+        )
+        coEvery { chrootManager.getMountStatus() } returns MountStatus(
+            procMounted = true,
+            sysMounted = true,
+            devMounted = true,
+            devPtsMounted = true,
+            sdcardMounted = true,
+            profilesMounted = true,
+        )
+        coEvery { chrootManager.getAgyVersion() } returns Result.success("1.4.11")
+        advanceUntilIdle()
+
+        viewModel.onAction(
+            WorkspaceAction.RunFullDiagnostics(
+                packageName = pkg,
+                isOverlayGranted = true,
+                isDeviceAdminActive = true,
+            ),
+        )
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        val onboarding = state.onboarding
+        assertTrue(onboarding.diagnosticsChecked)
+        assertFalse(onboarding.isRunningDiagnostics)
+        assertTrue(onboarding.isRootReady)
+        assertTrue(onboarding.isPermissionsReady)
+        assertTrue(onboarding.bootstrapReport?.notificationListenerEnabled == true)
+        assertTrue(onboarding.bootstrapReport?.batteryOptimizationExempted == true)
+        assertTrue(onboarding.isOverlayPermissionGranted)
+        assertTrue(onboarding.isDeviceAdminActive)
+        assertTrue(onboarding.isChrootMounted)
+        assertEquals("1.4.11", onboarding.agyVersion)
+        assertTrue(onboarding.chrootCurlInstalled)
+        assertTrue(onboarding.chrootCaCertsInstalled)
+        assertTrue(onboarding.chrootNetcatInstalled)
+        assertTrue(onboarding.chrootDependenciesReady)
+        assertTrue(onboarding.isAgyReady)
+        assertEquals(5, state.setupReadyCount)
+        assertEquals(5, state.setupTotalSteps)
+        assertTrue(state.isSetupFullyReady)
+        assertFalse(state.hasMissingCriticalSetup)
+        // Fully ready -> should stay on Hub, NOT auto-open Onboarding
+        assertEquals(AppDestination.Hub, state.currentDestination)
+    }
+
+    @Test
+    fun `RunFullDiagnostics auto-opens Onboarding only once when critical prerequisites are missing`() = runTest {
+        coEvery { rootExecutor.detectEnvironment() } returns RootEnvironmentInfo(
+            isRootGranted = false,
+            provider = RootProviderType.NONE,
+        )
+        coEvery { chrootManager.getMountStatus() } returns MountStatus()
+        coEvery { chrootManager.getAgyVersion() } returns Result.success(null)
+        advanceUntilIdle()
+
+        viewModel.onAction(WorkspaceAction.RunFullDiagnostics(packageName = "com.antigravity.mobile"))
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.hasMissingCriticalSetup)
+        assertEquals(AppDestination.Onboarding, viewModel.uiState.value.currentDestination)
+
+        // User dismisses Onboarding -> subsequent diagnostics MUST NOT force-reopen Onboarding
+        viewModel.onAction(WorkspaceAction.DismissOnboarding)
+        assertEquals(AppDestination.Hub, viewModel.uiState.value.currentDestination)
+
+        viewModel.onAction(WorkspaceAction.RunFullDiagnostics(packageName = "com.antigravity.mobile"))
+        advanceUntilIdle()
+        assertEquals(AppDestination.Hub, viewModel.uiState.value.currentDestination)
+    }
+
+    @Test
+    fun `AutoFixAllPrerequisites runs full sequential pipeline and falls back from BundledAsset to RemoteDownload`() = runTest {
+        val pkg = "com.antigravity.mobile"
+        val rootEnv = RootEnvironmentInfo(
+            isRootGranted = true,
+            provider = RootProviderType.MAGISK,
+            suVersion = "27.0:MAGISKSU",
+            mountMasterSupported = true,
+        )
+        val readyMount = MountStatus(
+            procMounted = true,
+            sysMounted = true,
+            devMounted = true,
+            devPtsMounted = true,
+            sdcardMounted = true,
+            profilesMounted = true,
+        )
+        var isMountedNow = false
+        var agyInstalled = false
+
+        coEvery { rootExecutor.detectEnvironment() } returns rootEnv
+        coEvery { rootExecutor.bootstrapPermissions(pkg, null, null) } returns BootstrapReport(
+            packageName = pkg,
+            environment = rootEnv,
+            restrictedSettingsGranted = true,
+            accessibilityEnabled = true,
+            notificationListenerEnabled = true,
+            batteryOptimizationExempted = true,
+        )
+        coEvery { chrootManager.ensureRootfsReady(ofType(RootfsSource.BundledAsset::class)) } returns
+            Result.failure(FileNotFoundException("Bundled asset rootfs/arm64-rootfs.tar.gz not found"))
+        coEvery { chrootManager.ensureRootfsReady(ofType(RootfsSource.RemoteDownload::class)) } returns
+            Result.success(Unit)
+        coEvery { chrootManager.mountAll() } answers {
+            isMountedNow = true
+            Result.success(readyMount)
+        }
+        coEvery { chrootManager.getMountStatus() } answers {
+            if (isMountedNow) readyMount else MountStatus()
+        }
+        coEvery { chrootManager.installOrUpdateAgy() } answers {
+            agyInstalled = true
+            Result.success("1.5.0")
+        }
+        coEvery { chrootManager.getAgyVersion() } answers {
+            Result.success(if (agyInstalled) "1.5.0" else null)
+        }
+        coEvery { rootExecutor.exec(match { it.contains("command -v curl") }, any(), any()) } returns ShellResult(
+            exitCode = 0,
+            stdout = "CURL\nCERTS\nNC\n",
+            stderr = "",
+        )
+        // Unauthenticated profile so completion message prompts 1-tap Google Sign-In
+        val unauthed = primaryProfile.copy(isAuthenticated = false)
+        profilesFlow.value = listOf(unauthed)
+        activeProfileFlow.value = unauthed
+        advanceUntilIdle()
+
+        viewModel.onAction(WorkspaceAction.AutoFixAllPrerequisites(pkg))
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        val onboarding = state.onboarding
+        coVerify(exactly = 1) { chrootManager.ensureRootfsReady(ofType(RootfsSource.BundledAsset::class)) }
+        coVerify(exactly = 1) { chrootManager.ensureRootfsReady(ofType(RootfsSource.RemoteDownload::class)) }
+        coVerify(exactly = 1) { chrootManager.mountAll() }
+        coVerify(exactly = 1) { chrootManager.installOrUpdateAgy() }
+        assertFalse(onboarding.isAutoFixingAll)
+        assertFalse(onboarding.isBusy)
+        assertNull(onboarding.autoFixStageLabel)
+        assertNull(onboarding.errorMessage)
+        assertTrue(onboarding.diagnosticsChecked)
+        assertTrue(onboarding.isRootReady)
+        assertTrue(onboarding.isPermissionsReady)
+        assertTrue(onboarding.isChrootMounted)
+        assertEquals("1.5.0", onboarding.agyVersion)
+        assertTrue(onboarding.isAgyReady)
+        assertEquals(RootfsSourceOption.REMOTE_DOWNLOAD, onboarding.selectedRootfsSource)
+        assertEquals(
+            "Tüm sistem bileşenleri hazır! Şimdi tek dokunuşla Google hesabınıza giriş yapabilirsiniz.",
+            onboarding.statusMessage,
+        )
+        assertEquals(4, state.setupReadyCount)
+    }
+
+    @Test
+    fun `QuickGoogleSignIn auto-creates default profile when empty and triggers startLoginFlow`() = runTest {
+        profilesFlow.value = emptyList()
+        activeProfileFlow.value = null
+        chrootStateFlow.value = ChrootState.Mounted(
+            agyVersion = "1.4.11",
+            mountStatus = MountStatus(
+                procMounted = true,
+                sysMounted = true,
+                devMounted = true,
+                devPtsMounted = true,
+                sdcardMounted = true,
+                profilesMounted = true,
+            ),
+        )
+        val createdProfile = AccountProfile(
+            id = "prof-auto-1",
+            displayName = WorkspaceViewModel.DEFAULT_QUICK_PROFILE_NAME,
+            email = null,
+            isAuthenticated = false,
+            isActive = true,
+            paths = ProfilePaths.forProfileId("prof-auto-1"),
+        )
+        coEvery { accountRepository.createProfile(WorkspaceViewModel.DEFAULT_QUICK_PROFILE_NAME, null) } returns
+            Result.success(createdProfile)
+        coEvery { accountRepository.switchActiveProfile("prof-auto-1") } answers {
+            profilesFlow.value = listOf(createdProfile)
+            activeProfileFlow.value = createdProfile
+            Result.success(createdProfile)
+        }
+        coEvery { accountRepository.startLoginFlow("prof-auto-1", null) } returns
+            Result.success(
+                LoginChallenge(
+                    profileId = "prof-auto-1",
+                    authUrl = "https://accounts.google.com/o/oauth2/auth?client_id=test",
+                ),
+            )
+        advanceUntilIdle()
+
+        viewModel.onAction(WorkspaceAction.QuickGoogleSignIn)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { accountRepository.createProfile("Ana Google Hesabım", null) }
+        coVerify(exactly = 1) { accountRepository.switchActiveProfile("prof-auto-1") }
+        coVerify(exactly = 1) { accountRepository.startLoginFlow("prof-auto-1", null) }
+        assertEquals("prof-auto-1", viewModel.uiState.value.activeProfile?.id)
+        assertEquals(
+            "https://accounts.google.com/o/oauth2/auth?client_id=test",
+            viewModel.uiState.value.pendingChromeCustomTabUrl,
+        )
+    }
+
+    @Test
+    fun `QuickGoogleSignIn shows Turkish guidance error when chroot or agy is missing`() = runTest {
+        chrootStateFlow.value = ChrootState.NotInstalled
+        coEvery { chrootManager.getMountStatus() } returns MountStatus()
+        coEvery { chrootManager.getAgyVersion() } returns Result.success(null)
+        advanceUntilIdle()
+
+        viewModel.onAction(WorkspaceAction.QuickGoogleSignIn)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { accountRepository.startLoginFlow(any(), any()) }
+        assertEquals(
+            "Google girişi için önce Chroot ve agy CLI kurulu olmalıdır. Yukarıdaki 'Tüm Eksikleri Otomatik Düzelt' butonuna basın.",
+            viewModel.uiState.value.onboarding.errorMessage,
+        )
+    }
+
+    @Test
+    fun `HandleClipboardAuthText auto-submits Google code or callback URL once, deduplicates, ignores normal text, and updates profile on auth`() = runTest {
+        val rawCode = "4/0AanRRrtAbCdEfGhIjKlMnOpQrStUvWxYz123456"
+        val callbackUrl = "https://antigravity.google/oauth-callback?state=xyz&code=4%2F0AanRRrtZzYyXxWwVvUuTtSsRrQqPpOoNnMm987654"
+        val extractedFromUrl = "4/0AanRRrtZzYyXxWwVvUuTtSsRrQqPpOoNnMm987654"
+
+        // Matcher sanity checks for trusted vs untrusted/unrelated text
+        assertEquals(rawCode, ClipboardOAuthMatcher.extractCode("  $rawCode  "))
+        assertEquals(extractedFromUrl, ClipboardOAuthMatcher.extractCode(callbackUrl))
+        assertEquals(rawCode, ClipboardOAuthMatcher.extractCode("http://127.0.0.1:43123/callback?code=$rawCode"))
+        assertEquals(rawCode, ClipboardOAuthMatcher.extractCode("http://localhost:8080/oauth?code=$rawCode"))
+        assertEquals(rawCode, ClipboardOAuthMatcher.extractCode("antigravity://oauth/callback?code=$rawCode"))
+        assertNull(ClipboardOAuthMatcher.extractCode("Merhaba normal pano metni"))
+        assertNull(ClipboardOAuthMatcher.extractCode("4/tooShort"))
+        assertNull(ClipboardOAuthMatcher.extractCode("https://evil.example.com/oauth-callback?code=$rawCode"))
+
+        val genericProfile = primaryProfile.copy(
+            displayName = WorkspaceViewModel.DEFAULT_QUICK_PROFILE_NAME,
+            email = null,
+            isAuthenticated = false,
+        )
+        profilesFlow.value = listOf(genericProfile)
+        activeProfileFlow.value = genericProfile
+        authFlowState.value = AuthFlowState.AwaitingBrowserAuth(
+            LoginChallenge(
+                profileId = genericProfile.id,
+                authUrl = "https://accounts.google.com/o/oauth2/auth",
+            ),
+        )
+        coEvery { accountRepository.submitAuthCode(genericProfile.id, rawCode) } returns
+            Result.success(genericProfile.copy(isAuthenticated = true, email = "dev@gmail.com"))
+        coEvery { accountRepository.submitAuthCode(genericProfile.id, extractedFromUrl) } returns
+            Result.success(genericProfile.copy(isAuthenticated = true, email = "dev@gmail.com"))
+        coEvery { accountRepository.refreshUsage(genericProfile.id) } returns
+            Result.success(UsageQuota(planTier = AccountPlanTier.PRO, remainingPercent = 95.0, updatedAtEpochMs = 5_000L))
+        advanceUntilIdle()
+
+        // 1. Ordinary clipboard text is silently ignored
+        viewModel.onAction(WorkspaceAction.HandleClipboardAuthText("Sadece rastgele bir not"))
+        advanceUntilIdle()
+        assertNull(viewModel.uiState.value.onboarding.clipboardAutoAuthHint)
+        assertNull(viewModel.uiState.value.onboarding.lastAutoSubmittedClipboardCode)
+        coVerify(exactly = 0) { accountRepository.submitAuthCode(any(), any()) }
+
+        // 2. Valid raw Google OAuth code is auto-submitted once
+        viewModel.onAction(WorkspaceAction.HandleClipboardAuthText(rawCode, autoSubmit = true))
+        advanceUntilIdle()
+        assertEquals(rawCode, viewModel.uiState.value.onboarding.lastAutoSubmittedClipboardCode)
+        coVerify(exactly = 1) { accountRepository.submitAuthCode(genericProfile.id, rawCode) }
+
+        // 3. Repeated focus event with the same clipboard code is deduplicated
+        viewModel.onAction(WorkspaceAction.HandleClipboardAuthText(rawCode, autoSubmit = true))
+        advanceUntilIdle()
+        coVerify(exactly = 1) { accountRepository.submitAuthCode(genericProfile.id, rawCode) }
+
+        // 4. Valid antigravity.google callback URL with a new code extracts and submits decoded code
+        viewModel.onAction(WorkspaceAction.HandleClipboardAuthText(callbackUrl, autoSubmit = true))
+        advanceUntilIdle()
+        assertEquals(extractedFromUrl, viewModel.uiState.value.onboarding.lastAutoSubmittedClipboardCode)
+        coVerify(exactly = 1) { accountRepository.submitAuthCode(genericProfile.id, extractedFromUrl) }
+
+        // 5. AuthFlowState.Authenticated updates generic profile displayName, clears hint, and refreshes quota
+        authFlowState.value = AuthFlowState.Authenticated(profileId = genericProfile.id, email = "dev@gmail.com")
+        advanceUntilIdle()
+        assertNull(viewModel.uiState.value.onboarding.clipboardAutoAuthHint)
+        assertEquals("dev@gmail.com", viewModel.uiState.value.activeProfile?.displayName)
+        assertEquals("dev@gmail.com", viewModel.uiState.value.activeProfile?.email)
+        coVerify(atLeast = 1) { accountRepository.refreshUsage(genericProfile.id) }
     }
 }
