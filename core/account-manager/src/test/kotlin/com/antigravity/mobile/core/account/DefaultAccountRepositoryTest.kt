@@ -29,9 +29,12 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.BufferedReader
+import java.io.IOException
 import java.io.PipedReader
 import java.io.PipedWriter
 import java.io.StringReader
+import java.nio.charset.StandardCharsets
+import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -256,6 +259,11 @@ class DefaultAccountRepositoryTest {
         every { chrootManager.state } returns MutableStateFlow(
             ChrootState.Mounted(mountStatus = MountStatus(procMounted = true)),
         )
+        coEvery { rootExecutor.exec(any(), any(), any()) } returns ShellResult(
+            exitCode = 0,
+            stdout = "",
+            stderr = "",
+        )
         coEvery { chrootManager.buildChrootCommand(capture(capturedSpecs)) } returns
             listOf("su", "--mount-master", "-c", "chroot /data/local/ag_rootfs ...")
         coEvery { rootExecutor.execArgv(any(), any(), any()) } returns ShellResult(
@@ -453,5 +461,158 @@ class DefaultAccountRepositoryTest {
         val res = bridge.fetchUsageOutput(profile)
         assertTrue(res.isFailure)
         assertTrue(res.exceptionOrNull()!!.message!!.contains("Not authenticated"))
+    }
+
+    @Test
+    fun `hasProfileCredentials recognizes agy 1_5_17+ antigravity-oauth-token paths alongside legacy files`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val chrootManager = mockk<ChrootManager>(relaxed = true)
+        val rootExecutor = mockk<RootExecutor>()
+        val capturedCmd = slot<String>()
+
+        coEvery { rootExecutor.exec(capture(capturedCmd), any(), any()) } returns ShellResult(
+            exitCode = 0,
+            stdout = "",
+            stderr = "",
+        )
+
+        val bridge = ChrootAgyAuthBridge(
+            chrootManager = chrootManager,
+            rootExecutor = rootExecutor,
+            ioDispatcher = dispatcher,
+        )
+        val profile = AccountProfile(
+            id = "p-token-1517",
+            displayName = "Agy 1.5.17",
+            paths = com.antigravity.mobile.contracts.ProfilePaths.forProfileId("p-token-1517"),
+        )
+
+        assertTrue(bridge.hasProfileCredentials(profile))
+        val expr = capturedCmd.captured
+        assertTrue(expr.contains("${profile.paths.hostRootDir}/home/.gemini/antigravity-cli/antigravity-oauth-token"))
+        assertTrue(expr.contains("${profile.paths.hostConfigDir}/antigravity-cli/antigravity-oauth-token"))
+        assertTrue(expr.contains("${profile.paths.hostRootDir}/data/antigravity-cli/antigravity-oauth-token"))
+        assertTrue(expr.contains("${profile.paths.hostGeminiDir}/oauth_creds.json"))
+        assertTrue(expr.contains("${profile.paths.hostGeminiDir}/google_accounts.json"))
+    }
+
+    @Test
+    fun `detectEmailFromProfile falls back to antigravity-oauth-token and agy logs without leaking tokens`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val chrootManager = mockk<ChrootManager>(relaxed = true)
+        val rootExecutor = mockk<RootExecutor>()
+
+        val jwtPayload = Base64.getUrlEncoder().withoutPadding().encodeToString(
+            """{"sub":"123","email":"jwt-user@gmail.com"}""".toByteArray(StandardCharsets.UTF_8),
+        )
+        val fakeJwt = "eyJhbGciOiJSUzI1NiJ9.$jwtPayload.signaturepart"
+
+        // Case 1: email inside antigravity-oauth-token (JWT payload)
+        coEvery { rootExecutor.exec(any(), any(), any()) } answers {
+            val cmd = firstArg<String>()
+            when {
+                cmd.contains("google_accounts.json") -> ShellResult(0, "", "")
+                cmd.contains("antigravity-oauth-token") -> ShellResult(
+                    0,
+                    """{"access_token":"ya29.secret_should_never_leak","id_token":"$fakeJwt"}""",
+                    "",
+                )
+                else -> ShellResult(0, "", "")
+            }
+        }
+
+        val bridge = ChrootAgyAuthBridge(
+            chrootManager = chrootManager,
+            rootExecutor = rootExecutor,
+            ioDispatcher = dispatcher,
+        )
+        val profile = AccountProfile(
+            id = "p-email",
+            displayName = "Email Detect",
+            paths = com.antigravity.mobile.contracts.ProfilePaths.forProfileId("p-email"),
+        )
+
+        assertEquals("jwt-user@gmail.com", bridge.detectEmailFromProfile(profile))
+
+        // Case 2: email only in cli.log / acp-login-*.log under home/.gemini/antigravity-cli/log/
+        coEvery { rootExecutor.exec(any(), any(), any()) } answers {
+            val cmd = firstArg<String>()
+            when {
+                cmd.contains("antigravity-cli/log") -> ShellResult(
+                    0,
+                    "2026-11-27 INFO Authenticated as log-user@gmail.com\n",
+                    "",
+                )
+                else -> ShellResult(0, "", "")
+            }
+        }
+
+        assertEquals("log-user@gmail.com", bridge.detectEmailFromProfile(profile))
+    }
+
+    @Test
+    fun `triggerAuthChallenge returns actionable Turkish IOException when chroot is not installed or mount fails`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val chrootManager = mockk<ChrootManager>()
+        val rootExecutor = mockk<RootExecutor>(relaxed = true)
+
+        every { chrootManager.state } returns MutableStateFlow<ChrootState>(ChrootState.NotInstalled)
+        coEvery { chrootManager.mountAll() } returns Result.failure(
+            IllegalStateException("Rootfs is not installed at /data/local/ag_rootfs"),
+        )
+
+        val bridge = ChrootAgyAuthBridge(
+            chrootManager = chrootManager,
+            rootExecutor = rootExecutor,
+            ioDispatcher = dispatcher,
+        )
+        val profile = AccountProfile(
+            id = "p-no-chroot",
+            displayName = "No Chroot",
+            paths = com.antigravity.mobile.contracts.ProfilePaths.forProfileId("p-no-chroot"),
+        )
+
+        val res = bridge.triggerAuthChallenge(profile)
+        assertTrue(res.isFailure)
+        val err = res.exceptionOrNull()
+        assertTrue("Expected IOException, got $err", err is IOException)
+        val msg = err!!.message.orEmpty()
+        assertTrue("Expected Turkish chroot/agy guidance, got: $msg", msg.contains("ARM64 chroot"))
+        assertTrue("Expected setup wizard step 3 guidance, got: $msg", msg.contains("3. adımı"))
+    }
+
+    @Test
+    fun `triggerAuthChallenge returns actionable Turkish IOException when agy binary is missing in chroot`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val chrootManager = mockk<ChrootManager>()
+        val rootExecutor = mockk<RootExecutor>()
+
+        every { chrootManager.state } returns MutableStateFlow(
+            ChrootState.Mounted(mountStatus = MountStatus(procMounted = true)),
+        )
+        coEvery { rootExecutor.exec(any(), any(), any()) } returns ShellResult(
+            exitCode = 1,
+            stdout = "",
+            stderr = "",
+        )
+
+        val bridge = ChrootAgyAuthBridge(
+            chrootManager = chrootManager,
+            rootExecutor = rootExecutor,
+            ioDispatcher = dispatcher,
+        )
+        val profile = AccountProfile(
+            id = "p-no-agy",
+            displayName = "No Agy",
+            paths = com.antigravity.mobile.contracts.ProfilePaths.forProfileId("p-no-agy"),
+        )
+
+        val res = bridge.triggerAuthChallenge(profile)
+        assertTrue(res.isFailure)
+        val err = res.exceptionOrNull()
+        assertTrue("Expected IOException, got $err", err is IOException)
+        val msg = err!!.message.orEmpty()
+        assertTrue("Expected Turkish agy missing guidance, got: $msg", msg.contains("agy CLI"))
+        assertTrue("Expected setup wizard step 3 guidance, got: $msg", msg.contains("Kurulum Sihirbazı"))
     }
 }

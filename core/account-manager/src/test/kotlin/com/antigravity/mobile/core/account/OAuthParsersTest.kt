@@ -76,6 +76,11 @@ class OAuthParsersTest {
         )
         assertEquals("4/0A_official_pkce_code", officialLandingUrl.getOrThrow())
 
+        val deepLinkUrl = OAuthCallbackParser.extractCodeFromUserInput(
+            "antigravity://oauth/callback?code=4%2F0A_deeplink_code_99&state=s2",
+        )
+        assertEquals("4/0A_deeplink_code_99", deepLinkUrl.getOrThrow())
+
         assertTrue(
             "Strict loopback parse() must still reject non-loopback hosts",
             OAuthCallbackParser.parse("https://antigravity.google/oauth-callback?code=123") is OAuthCallbackResult.Invalid,
@@ -85,6 +90,68 @@ class OAuthParsersTest {
         )
         assertTrue(OAuthCallbackParser.extractCodeFromUserInput("   ").isFailure)
         assertTrue(OAuthCallbackParser.extractCodeFromUserInput("https://evil.com/cb?code=123").isFailure)
+    }
+
+    @Test
+    fun `extractClipboardAuthCandidate accepts strictly verified OAuth codes and callback URLs`() {
+        val validCode = "4/0AeaYSHAbcdefghijklmnopqrstuvwxyz1234"
+        assertEquals(validCode, OAuthCallbackParser.extractClipboardAuthCandidate(validCode))
+        assertEquals(validCode, OAuthCallbackParser.extractClipboardAuthCandidate("  $validCode \n"))
+
+        assertEquals(
+            "4/0A_official_clip_code_1234567890",
+            OAuthCallbackParser.extractClipboardAuthCandidate(
+                "https://antigravity.google/oauth-callback?code=4%2F0A_official_clip_code_1234567890&state=abc",
+            ),
+        )
+        assertEquals(
+            "4/0A_loopback_clip_code_1234567890",
+            OAuthCallbackParser.extractClipboardAuthCandidate(
+                "http://127.0.0.1:12345/oauth2callback?code=4%2F0A_loopback_clip_code_1234567890&scope=email",
+            ),
+        )
+        assertEquals(
+            "4/0A_localhost_clip_code_1234567890",
+            OAuthCallbackParser.extractClipboardAuthCandidate(
+                "http://localhost:8080/oauth2callback?code=4%2F0A_localhost_clip_code_1234567890",
+            ),
+        )
+        assertEquals(
+            "4/0A_deeplink_clip_code_1234567890",
+            OAuthCallbackParser.extractClipboardAuthCandidate(
+                "antigravity://oauth/callback?code=4%2F0A_deeplink_clip_code_1234567890&state=xyz",
+            ),
+        )
+    }
+
+    @Test
+    fun `extractClipboardAuthCandidate rejects ordinary URLs, passwords, blank text, short codes, and prose`() {
+        val rejected = listOf(
+            "",
+            "   \n\t  ",
+            "4/short",
+            "4/0A_only_19_chars12",
+            "4/0A_invalid!chars_12345678901234567890",
+            "MyS3cur3P@ssw0rd!2026LongPassword",
+            "random-token-without-google-prefix-12345678901234567890",
+            "https://www.google.com/search?q=antigravity",
+            "https://evil.example.com/oauth-callback?code=4%2F0A_stolen_12345678901234567890",
+            "https://antigravity.google.evil.com/oauth-callback?code=4%2F0A_spoofed_12345678901234567890",
+            "http://antigravity.google/oauth-callback?code=4%2F0A_insecure_http_1234567890",
+            "https://antigravity.google/docs?code=4%2F0A_wrong_path_1234567890",
+            "https://antigravity.google/oauth-callback?state=no_code_here",
+            "https://antigravity.google/oauth-callback?code=   ",
+            "https://antigravity.google/oauth-callback?error=access_denied&code=4%2F0A_error_present",
+            "http://127.0.0.1:12345/oauth2callback?state=missing_code",
+            "antigravity://other/callback?code=4%2F0A_wrong_host_1234567890",
+            "antigravity://oauth/other?code=4%2F0A_wrong_path_1234567890",
+            "Here is your sign-in note. Please open Chrome and sign in with your account.",
+            "Copy this code: 4/0AeaYSHAbcdefghijklmnopqrstuvwxyz1234",
+            "4/0AeaYSHAbcdefghijklmnopqrstuvwxyz1234\nsecond line",
+        )
+        for (sample in rejected) {
+            assertNull("Expected null for clipboard sample: '$sample'", OAuthCallbackParser.extractClipboardAuthCandidate(sample))
+        }
     }
 
     @Test(timeout = 15_000L)

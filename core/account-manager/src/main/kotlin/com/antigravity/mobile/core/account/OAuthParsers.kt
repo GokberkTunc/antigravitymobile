@@ -123,6 +123,7 @@ sealed interface OAuthCallbackResult {
  */
 object OAuthCallbackParser {
     private val ALLOWED_HOSTS = setOf("127.0.0.1", "localhost", "::1", "[::1]")
+    private val GOOGLE_OAUTH_CODE_REGEX = Regex("""^4/[0-9A-Za-z_-]{20,}$""")
 
     fun parse(callbackUri: String): OAuthCallbackResult {
         val trimmed = callbackUri.trim()
@@ -168,7 +169,67 @@ object OAuthCallbackParser {
     }
 
     /**
-     * Accepts a raw manual authorization code, a pasted loopback redirect URL, OR the official
+     * Strictly inspects clipboard contents and returns a normalized authorization code ONLY when
+     * [rawClipboardText] is unmistakably a Google OAuth callback URL (`antigravity.google`
+     * `oauth-callback`, `127.0.0.1`/`localhost` loopback callback, or `antigravity://oauth/callback`
+     * with a non-blank `code=` query parameter) or a standalone Google OAuth authorization code
+     * matching `^4/[0-9A-Za-z_-]{20,}$`.
+     *
+     * Returns `null` for arbitrary text, passwords, unrelated URLs, short strings, or prose.
+     */
+    fun extractClipboardAuthCandidate(rawClipboardText: String): String? {
+        val trimmed = rawClipboardText.trim()
+        if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() || it == '\u0000' }) {
+            return null
+        }
+
+        if (GOOGLE_OAUTH_CODE_REGEX.matches(trimmed)) {
+            return trimmed
+        }
+
+        val uri = try {
+            URI(trimmed)
+        } catch (_: Exception) {
+            return null
+        }
+
+        val scheme = uri.scheme?.lowercase() ?: return null
+        val host = uri.host?.lowercase() ?: return null
+        val path = uri.path.orEmpty()
+
+        val isSupportedCallback = when {
+            scheme == "https" && host == "antigravity.google" -> {
+                path.contains("oauth-callback", ignoreCase = true)
+            }
+            (scheme == "http" || scheme == "https") && host in ALLOWED_HOSTS -> {
+                true
+            }
+            scheme == "antigravity" && host == "oauth" -> {
+                path.equals("/callback", ignoreCase = true) ||
+                    path.startsWith("/callback/", ignoreCase = true)
+            }
+            else -> false
+        }
+
+        if (!isSupportedCallback) {
+            return null
+        }
+
+        val params = OAuthUrlExtractor.parseQueryParams(uri.rawQuery)
+        if (!params["error"].isNullOrBlank()) {
+            return null
+        }
+
+        val code = params["code"]?.trim() ?: return null
+        if (code.isEmpty() || code.any { it == '\n' || it == '\r' || it == '\u0000' }) {
+            return null
+        }
+        return code
+    }
+
+    /**
+     * Accepts a raw manual authorization code, a pasted loopback redirect URL, an
+     * `antigravity://oauth/callback?...` deep link, OR the official
      * `https://antigravity.google/oauth-callback?...` landing URL emitted by `agy 1.5.16+`,
      * and returns the extracted authorization code.
      */
@@ -177,7 +238,11 @@ object OAuthCallbackParser {
         if (trimmed.isEmpty()) {
             return Result.failure(IllegalArgumentException("Authorization code must not be blank"))
         }
-        if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+        if (
+            trimmed.startsWith("http://", ignoreCase = true) ||
+            trimmed.startsWith("https://", ignoreCase = true) ||
+            trimmed.startsWith("antigravity://", ignoreCase = true)
+        ) {
             val uri = try {
                 URI(trimmed)
             } catch (e: Exception) {
@@ -185,11 +250,15 @@ object OAuthCallbackParser {
             }
             val scheme = uri.scheme?.lowercase()
             val host = uri.host?.lowercase()
+            val path = uri.path.orEmpty()
             val isOfficialAntigravityCallback = scheme == "https" &&
                 host == "antigravity.google" &&
-                uri.path?.startsWith("/oauth-callback") == true
+                path.startsWith("/oauth-callback")
+            val isAntigravityDeepLinkCallback = scheme == "antigravity" &&
+                host == "oauth" &&
+                (path.equals("/callback", ignoreCase = true) || path.startsWith("/callback/", ignoreCase = true))
 
-            if (isOfficialAntigravityCallback) {
+            if (isOfficialAntigravityCallback || isAntigravityDeepLinkCallback) {
                 val params = OAuthUrlExtractor.parseQueryParams(uri.rawQuery)
                 val error = params["error"]
                 if (!error.isNullOrBlank()) {
