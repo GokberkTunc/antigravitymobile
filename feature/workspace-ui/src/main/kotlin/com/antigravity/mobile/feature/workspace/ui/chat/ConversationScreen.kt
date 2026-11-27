@@ -41,6 +41,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -103,6 +104,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -121,8 +123,10 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -175,14 +179,32 @@ fun ConversationScreen(
     val permissionCardMaxHeight = (LocalConfiguration.current.screenHeightDp * 0.5f).dp
 
     val lastMessage = state.messages.lastOrNull()
+    val isNearBottom by remember {
+        derivedStateOf {
+            val total = listState.layoutInfo.totalItemsCount
+            if (total <= 1) {
+                true
+            } else {
+                val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+                lastVisible == null || lastVisible.index >= total - 2
+            }
+        }
+    }
+    LaunchedEffect(state.messages.size) {
+        if (state.settings.autoScrollChat && state.messages.isNotEmpty() && !listState.isScrollInProgress) {
+            listState.animateScrollToItem(state.messages.size)
+        }
+    }
     LaunchedEffect(
-        state.messages.size,
         lastMessage?.content?.length,
+        lastMessage?.thinkingContent?.length,
         lastMessage?.toolCalls?.size,
+        state.pendingPermissionRequest?.requestId,
         state.settings.autoScrollChat,
     ) {
-        if (state.settings.autoScrollChat && state.messages.isNotEmpty()) {
-            listState.animateScrollToItem(state.messages.lastIndex)
+        if (state.settings.autoScrollChat && state.messages.isNotEmpty() && isNearBottom && !listState.isScrollInProgress) {
+            // Scroll to the bottom sentinel anchor so tall streaming/thinking items never snap back to their top edge.
+            listState.scrollToItem(state.messages.size)
         }
     }
 
@@ -412,6 +434,9 @@ fun ConversationScreen(
                             showCodeLineNumbers = state.settings.showCodeLineNumbers,
                             showThoughtBlocksExpanded = state.settings.showThoughtBlocksExpanded,
                         )
+                    }
+                    item(key = "chat-bottom-anchor") {
+                        Spacer(modifier = Modifier.height(1.dp))
                     }
                 }
             }
@@ -1818,10 +1843,23 @@ fun ToolExecutionPill(
     }
 }
 
+private enum class MarkdownAlertKind(val label: String) {
+    NOTE("Not"),
+    TIP("İpucu"),
+    IMPORTANT("Önemli"),
+    WARNING("Uyarı"),
+    CAUTION("Dikkat"),
+}
+
 private sealed interface MarkdownBlock {
     data class Paragraph(val text: String) : MarkdownBlock
     data class Heading(val level: Int, val text: String) : MarkdownBlock
     data class Code(val language: String, val content: String) : MarkdownBlock
+    data class BulletList(val items: List<String>) : MarkdownBlock
+    data class NumberedList(val items: List<Pair<String, String>>) : MarkdownBlock
+    data class Blockquote(val alertKind: MarkdownAlertKind?, val text: String) : MarkdownBlock
+    data class Table(val headers: List<String>, val rows: List<List<String>>) : MarkdownBlock
+    data object HorizontalRule : MarkdownBlock
 }
 
 @Composable
@@ -1831,40 +1869,248 @@ fun MarkdownContent(
     showCodeLineNumbers: Boolean = false,
 ) {
     val ext = LocalAntigravityColors.current
-    val inlineCodeBg = ext.codeBlockBackground
-    val inlineCodeFg = MaterialTheme.colorScheme.primary
+    val colorScheme = MaterialTheme.colorScheme
+    val inlineCodeBg = if (ext.isDark) {
+        colorScheme.surfaceContainerHigh
+    } else {
+        colorScheme.primaryContainer.copy(alpha = 0.55f)
+    }
+    val inlineCodeFg = if (ext.isDark) ext.accentCyan else colorScheme.onPrimaryContainer
+    val linkColor = colorScheme.primary
     val blocks = remember(text) { parseMarkdownBlocks(text) }
 
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        blocks.forEach { block ->
-            when (block) {
-                is MarkdownBlock.Heading -> {
+    SelectionContainer(modifier = modifier) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            blocks.forEach { block ->
+                when (block) {
+                    is MarkdownBlock.Heading -> {
+                        Column(
+                            modifier = Modifier.padding(top = if (block.level <= 2) 6.dp else 2.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Text(
+                                text = renderInlineMarkdown(block.text, inlineCodeBg, inlineCodeFg, linkColor),
+                                style = when (block.level) {
+                                    1 -> MaterialTheme.typography.titleLarge.copy(lineHeight = 28.sp)
+                                    2 -> MaterialTheme.typography.titleMedium.copy(lineHeight = 24.sp)
+                                    3 -> MaterialTheme.typography.titleSmall.copy(lineHeight = 21.sp)
+                                    else -> MaterialTheme.typography.labelLarge
+                                },
+                                fontWeight = FontWeight.Bold,
+                                color = if (block.level == 1) colorScheme.onSurface else colorScheme.onSurface.copy(alpha = 0.94f),
+                            )
+                            if (block.level <= 2) {
+                                HorizontalDivider(
+                                    thickness = 0.75.dp,
+                                    color = ext.cardBorder.copy(alpha = 0.75f),
+                                )
+                            }
+                        }
+                    }
+
+                    is MarkdownBlock.Code -> {
+                        CodeBlockCard(
+                            language = block.language,
+                            code = block.content,
+                            showLineNumbers = showCodeLineNumbers,
+                        )
+                    }
+
+                    is MarkdownBlock.BulletList -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            block.items.forEach { itemText ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.Top,
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(top = 9.dp)
+                                            .size(5.dp)
+                                            .clip(CircleShape)
+                                            .background(colorScheme.primary.copy(alpha = 0.85f)),
+                                    )
+                                    Text(
+                                        text = renderInlineMarkdown(itemText, inlineCodeBg, inlineCodeFg, linkColor),
+                                        style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 23.sp),
+                                        color = colorScheme.onSurface,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    is MarkdownBlock.NumberedList -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            block.items.forEach { (num, itemText) ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.Top,
+                                ) {
+                                    Text(
+                                        text = "$num.",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = colorScheme.primary,
+                                        modifier = Modifier
+                                            .padding(top = 3.dp)
+                                            .widthIn(min = 20.dp),
+                                    )
+                                    Text(
+                                        text = renderInlineMarkdown(itemText, inlineCodeBg, inlineCodeFg, linkColor),
+                                        style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 23.sp),
+                                        color = colorScheme.onSurface,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    is MarkdownBlock.Blockquote -> {
+                        val accent = when (block.alertKind) {
+                            MarkdownAlertKind.TIP -> ext.success
+                            MarkdownAlertKind.WARNING -> ext.warning
+                            MarkdownAlertKind.CAUTION -> ext.critical
+                            MarkdownAlertKind.IMPORTANT -> colorScheme.secondary
+                            MarkdownAlertKind.NOTE, null -> colorScheme.primary
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = accent.copy(alpha = if (ext.isDark) 0.12f else 0.08f),
+                            border = BorderStroke(1.dp, accent.copy(alpha = 0.30f)),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(3.5.dp)
+                                        .fillMaxHeight()
+                                        .background(accent),
+                                )
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    if (block.alertKind != null) {
+                                        Text(
+                                            text = block.alertKind.label,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = accent,
+                                        )
+                                    }
+                                    Text(
+                                        text = renderInlineMarkdown(block.text, inlineCodeBg, inlineCodeFg, linkColor),
+                                        style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp),
+                                        color = colorScheme.onSurface.copy(alpha = 0.92f),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    is MarkdownBlock.Table -> {
+                        MarkdownTableCard(
+                            headers = block.headers,
+                            rows = block.rows,
+                            inlineCodeBg = inlineCodeBg,
+                            inlineCodeFg = inlineCodeFg,
+                            linkColor = linkColor,
+                        )
+                    }
+
+                    MarkdownBlock.HorizontalRule -> {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 4.dp),
+                            thickness = 1.dp,
+                            color = ext.cardBorder,
+                        )
+                    }
+
+                    is MarkdownBlock.Paragraph -> {
+                        Text(
+                            text = renderInlineMarkdown(block.text, inlineCodeBg, inlineCodeFg, linkColor),
+                            style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 23.5.sp),
+                            color = colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MarkdownTableCard(
+    headers: List<String>,
+    rows: List<List<String>>,
+    inlineCodeBg: Color,
+    inlineCodeFg: Color,
+    linkColor: Color,
+) {
+    val ext = LocalAntigravityColors.current
+    val colorScheme = MaterialTheme.colorScheme
+    val colCount = maxOf(headers.size, rows.maxOfOrNull { it.size } ?: 0).coerceAtLeast(1)
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = colorScheme.surface,
+        border = BorderStroke(1.dp, ext.cardBorder),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+        ) {
+            // Header Row
+            Row(
+                modifier = Modifier
+                    .background(colorScheme.surfaceContainerHigh.copy(alpha = if (ext.isDark) 0.7f else 0.85f))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                for (c in 0 until colCount) {
                     Text(
-                        text = renderInlineMarkdown(block.text, inlineCodeBg, inlineCodeFg),
-                        style = when (block.level) {
-                            1 -> MaterialTheme.typography.titleLarge
-                            2 -> MaterialTheme.typography.titleMedium
-                            else -> MaterialTheme.typography.titleSmall
-                        },
+                        text = renderInlineMarkdown(headers.getOrElse(c) { "" }, inlineCodeBg, inlineCodeFg, linkColor),
+                        style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = colorScheme.onSurface,
+                        modifier = Modifier.widthIn(min = 84.dp, max = 220.dp),
                     )
                 }
-
-                is MarkdownBlock.Code -> {
-                    CodeBlockCard(
-                        language = block.language,
-                        code = block.content,
-                        showLineNumbers = showCodeLineNumbers,
-                    )
+            }
+            HorizontalDivider(color = ext.cardBorder)
+            rows.forEachIndexed { rowIdx, row ->
+                Row(
+                    modifier = Modifier
+                        .background(
+                            if (rowIdx % 2 == 1) {
+                                colorScheme.surfaceContainerLow.copy(alpha = 0.65f)
+                            } else {
+                                Color.Transparent
+                            },
+                        )
+                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    for (c in 0 until colCount) {
+                        Text(
+                            text = renderInlineMarkdown(row.getOrElse(c) { "" }, inlineCodeBg, inlineCodeFg, linkColor),
+                            style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                            color = colorScheme.onSurfaceVariant,
+                            modifier = Modifier.widthIn(min = 84.dp, max = 220.dp),
+                        )
+                    }
                 }
-
-                is MarkdownBlock.Paragraph -> {
-                    Text(
-                        text = renderInlineMarkdown(block.text, inlineCodeBg, inlineCodeFg),
-                        style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 23.sp),
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
+                if (rowIdx < rows.lastIndex) {
+                    HorizontalDivider(thickness = 0.5.dp, color = ext.cardBorder.copy(alpha = 0.6f))
                 }
             }
         }
@@ -1961,6 +2207,13 @@ private fun CodeBlockCard(
 
             HorizontalDivider(color = ext.cardBorder)
 
+            val keywordColor = if (ext.isDark) Color(0xFFC084FC) else Color(0xFF7C3AED)
+            val stringColor = ext.success
+            val commentColor = ext.textMuted
+            val numberColor = ext.warning
+            val typeColor = ext.accentCyan
+            val defaultCodeColor = MaterialTheme.colorScheme.onSurface
+
             if (showLineNumbers) {
                 Row(
                     modifier = Modifier
@@ -1994,27 +2247,54 @@ private fun CodeBlockCard(
                         modifier = Modifier.padding(start = 10.dp, end = 12.dp),
                     ) {
                         codeLines.forEach { line ->
+                            val highlighted = remember(line, ext.isDark) {
+                                highlightCodeLine(
+                                    line = line.ifEmpty { " " },
+                                    keywordColor = keywordColor,
+                                    stringColor = stringColor,
+                                    commentColor = commentColor,
+                                    numberColor = numberColor,
+                                    typeColor = typeColor,
+                                )
+                            }
                             Text(
-                                text = line.ifEmpty { " " },
+                                text = highlighted,
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 12.sp,
                                     lineHeight = 18.sp,
                                 ),
-                                color = MaterialTheme.colorScheme.onSurface,
+                                color = defaultCodeColor,
                             )
                         }
                     }
                 }
             } else {
+                val highlightedBlock = remember(code, ext.isDark) {
+                    buildAnnotatedString {
+                        codeLines.forEachIndexed { idx, line ->
+                            append(
+                                highlightCodeLine(
+                                    line = line,
+                                    keywordColor = keywordColor,
+                                    stringColor = stringColor,
+                                    commentColor = commentColor,
+                                    numberColor = numberColor,
+                                    typeColor = typeColor,
+                                ),
+                            )
+                            if (idx < codeLines.lastIndex) append('\n')
+                        }
+                    }
+                }
                 Text(
-                    text = code,
+                    text = highlightedBlock,
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontFamily = FontFamily.Monospace,
                         fontSize = 12.sp,
                         lineHeight = 18.sp,
                     ),
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = defaultCodeColor,
                     modifier = Modifier
                         .horizontalScroll(rememberScrollState())
                         .padding(12.dp),
@@ -2023,6 +2303,112 @@ private fun CodeBlockCard(
         }
     }
 }
+
+private val CODE_KEYWORDS = setOf(
+    "fun", "val", "var", "class", "object", "interface", "sealed", "data", "enum", "override",
+    "private", "public", "internal", "protected", "return", "if", "else", "when", "for", "while",
+    "try", "catch", "finally", "throw", "import", "package", "suspend", "true", "false", "null",
+    "def", "async", "await", "const", "let", "function", "export", "from", "in", "is", "as",
+    "echo", "fi", "then", "done", "do", "case", "esac", "select", "where", "and", "or", "not",
+)
+
+private fun highlightCodeLine(
+    line: String,
+    keywordColor: Color,
+    stringColor: Color,
+    commentColor: Color,
+    numberColor: Color,
+    typeColor: Color,
+): AnnotatedString = buildAnnotatedString {
+    val trimmed = line.trimStart()
+    if (trimmed.startsWith("//") || trimmed.startsWith("#")) {
+        withStyle(SpanStyle(color = commentColor, fontStyle = FontStyle.Italic)) {
+            append(line)
+        }
+        return@buildAnnotatedString
+    }
+    var i = 0
+    while (i < line.length) {
+        val ch = line[i]
+        when {
+            ch == '/' && i + 1 < line.length && line[i + 1] == '/' -> {
+                withStyle(SpanStyle(color = commentColor, fontStyle = FontStyle.Italic)) {
+                    append(line.substring(i))
+                }
+                return@buildAnnotatedString
+            }
+
+            ch == '"' || ch == '\'' -> {
+                val quote = ch
+                var end = i + 1
+                while (end < line.length) {
+                    if (line[end] == '\\' && end + 1 < line.length) {
+                        end += 2
+                    } else if (line[end] == quote) {
+                        end += 1
+                        break
+                    } else {
+                        end += 1
+                    }
+                }
+                withStyle(SpanStyle(color = stringColor)) {
+                    append(line.substring(i, end))
+                }
+                i = end
+            }
+
+            ch == '@' && i + 1 < line.length && line[i + 1].isLetter() -> {
+                var end = i + 1
+                while (end < line.length && (line[end].isLetterOrDigit() || line[end] == '_')) end++
+                withStyle(SpanStyle(color = typeColor, fontWeight = FontWeight.Medium)) {
+                    append(line.substring(i, end))
+                }
+                i = end
+            }
+
+            ch.isDigit() && (i == 0 || !line[i - 1].isLetterOrDigit()) -> {
+                var end = i + 1
+                while (end < line.length && (line[end].isDigit() || line[end] == '.' || line[end] == '_')) end++
+                withStyle(SpanStyle(color = numberColor)) {
+                    append(line.substring(i, end))
+                }
+                i = end
+            }
+
+            ch.isLetter() || ch == '_' -> {
+                var end = i + 1
+                while (end < line.length && (line[end].isLetterOrDigit() || line[end] == '_')) end++
+                val word = line.substring(i, end)
+                when {
+                    word in CODE_KEYWORDS -> withStyle(SpanStyle(color = keywordColor, fontWeight = FontWeight.Medium)) {
+                        append(word)
+                    }
+                    word.first().isUpperCase() && word.any { it.isLowerCase() } -> withStyle(SpanStyle(color = typeColor)) {
+                        append(word)
+                    }
+                    else -> append(word)
+                }
+                i = end
+            }
+
+            else -> {
+                append(ch)
+                i += 1
+            }
+        }
+    }
+}
+
+private val NUMBERED_LIST_REGEX = Regex("""^(\d+)[.)]\s+(.+)$""")
+private val TABLE_SEPARATOR_REGEX = Regex("""^\|?(\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?$""")
+private val HR_REGEX = Regex("""^([-*_])\1{2,}\s*$""")
+
+private fun splitTableRow(line: String): List<String> =
+    line.trim()
+        .removePrefix("|")
+        .removeSuffix("|")
+        .split("|")
+        .map { it.trim() }
 
 private fun parseMarkdownBlocks(raw: String): List<MarkdownBlock> {
     val result = mutableListOf<MarkdownBlock>()
@@ -2041,30 +2427,130 @@ private fun parseMarkdownBlocks(raw: String): List<MarkdownBlock> {
     while (i < lines.size) {
         val line = lines[i]
         val trimmed = line.trimStart()
-        if (trimmed.startsWith("```")) {
-            flushParagraph()
-            val lang = trimmed.removePrefix("```").trim()
-            val codeLines = mutableListOf<String>()
-            i += 1
-            while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
-                codeLines.add(lines[i])
+        when {
+            trimmed.startsWith("```") -> {
+                flushParagraph()
+                val lang = trimmed.removePrefix("```").trim()
+                val codeLines = mutableListOf<String>()
                 i += 1
+                while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
+                    codeLines.add(lines[i])
+                    i += 1
+                }
+                result.add(MarkdownBlock.Code(lang, codeLines.joinToString("\n")))
             }
-            result.add(MarkdownBlock.Code(lang, codeLines.joinToString("\n")))
-        } else if (trimmed.startsWith("### ")) {
-            flushParagraph()
-            result.add(MarkdownBlock.Heading(3, trimmed.removePrefix("### ")))
-        } else if (trimmed.startsWith("## ")) {
-            flushParagraph()
-            result.add(MarkdownBlock.Heading(2, trimmed.removePrefix("## ")))
-        } else if (trimmed.startsWith("# ")) {
-            flushParagraph()
-            result.add(MarkdownBlock.Heading(1, trimmed.removePrefix("# ")))
-        } else if (line.isBlank()) {
-            flushParagraph()
-        } else {
-            if (paragraphBuffer.isNotEmpty()) paragraphBuffer.append('\n')
-            paragraphBuffer.append(line)
+
+            HR_REGEX.matches(trimmed) -> {
+                flushParagraph()
+                result.add(MarkdownBlock.HorizontalRule)
+            }
+
+            trimmed.startsWith("#### ") -> {
+                flushParagraph()
+                result.add(MarkdownBlock.Heading(4, trimmed.removePrefix("#### ")))
+            }
+
+            trimmed.startsWith("### ") -> {
+                flushParagraph()
+                result.add(MarkdownBlock.Heading(3, trimmed.removePrefix("### ")))
+            }
+
+            trimmed.startsWith("## ") -> {
+                flushParagraph()
+                result.add(MarkdownBlock.Heading(2, trimmed.removePrefix("## ")))
+            }
+
+            trimmed.startsWith("# ") -> {
+                flushParagraph()
+                result.add(MarkdownBlock.Heading(1, trimmed.removePrefix("# ")))
+            }
+
+            // Markdown Table
+            trimmed.contains('|') && i + 1 < lines.size && TABLE_SEPARATOR_REGEX.matches(lines[i + 1].trim()) -> {
+                flushParagraph()
+                val headers = splitTableRow(trimmed)
+                i += 2
+                val rows = mutableListOf<List<String>>()
+                while (i < lines.size && lines[i].contains('|') && lines[i].isNotBlank()) {
+                    rows.add(splitTableRow(lines[i]))
+                    i += 1
+                }
+                result.add(MarkdownBlock.Table(headers, rows))
+                continue
+            }
+
+            // Blockquote / GitHub Alert
+            trimmed.startsWith(">") -> {
+                flushParagraph()
+                val quoteLines = mutableListOf<String>()
+                while (i < lines.size && lines[i].trimStart().startsWith(">")) {
+                    quoteLines.add(lines[i].trimStart().removePrefix(">").removePrefix(" "))
+                    i += 1
+                }
+                val first = quoteLines.firstOrNull()?.trim().orEmpty()
+                val alertKind = when {
+                    first.equals("[!NOTE]", ignoreCase = true) -> MarkdownAlertKind.NOTE
+                    first.equals("[!TIP]", ignoreCase = true) -> MarkdownAlertKind.TIP
+                    first.equals("[!IMPORTANT]", ignoreCase = true) -> MarkdownAlertKind.IMPORTANT
+                    first.equals("[!WARNING]", ignoreCase = true) -> MarkdownAlertKind.WARNING
+                    first.equals("[!CAUTION]", ignoreCase = true) -> MarkdownAlertKind.CAUTION
+                    else -> null
+                }
+                val body = if (alertKind != null) quoteLines.drop(1).joinToString("\n").trim() else quoteLines.joinToString("\n").trim()
+                if (body.isNotEmpty() || alertKind != null) {
+                    result.add(MarkdownBlock.Blockquote(alertKind, body))
+                }
+                continue
+            }
+
+            // Bullet List
+            trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("• ") -> {
+                flushParagraph()
+                val items = mutableListOf<String>()
+                while (i < lines.size) {
+                    val t = lines[i].trimStart()
+                    val item = when {
+                        t.startsWith("- ") -> t.removePrefix("- ")
+                        t.startsWith("* ") -> t.removePrefix("* ")
+                        t.startsWith("• ") -> t.removePrefix("• ")
+                        else -> null
+                    }
+                    if (item != null) {
+                        items.add(item)
+                        i += 1
+                    } else {
+                        break
+                    }
+                }
+                result.add(MarkdownBlock.BulletList(items))
+                continue
+            }
+
+            // Numbered List
+            NUMBERED_LIST_REGEX.matches(trimmed) -> {
+                flushParagraph()
+                val items = mutableListOf<Pair<String, String>>()
+                while (i < lines.size) {
+                    val m = NUMBERED_LIST_REGEX.matchEntire(lines[i].trimStart())
+                    if (m != null) {
+                        items.add(m.groupValues[1] to m.groupValues[2])
+                        i += 1
+                    } else {
+                        break
+                    }
+                }
+                result.add(MarkdownBlock.NumberedList(items))
+                continue
+            }
+
+            line.isBlank() -> {
+                flushParagraph()
+            }
+
+            else -> {
+                if (paragraphBuffer.isNotEmpty()) paragraphBuffer.append('\n')
+                paragraphBuffer.append(line)
+            }
         }
         i += 1
     }
@@ -2076,10 +2562,24 @@ private fun renderInlineMarkdown(
     text: String,
     inlineCodeBg: Color,
     inlineCodeFg: Color,
+    linkColor: Color = inlineCodeFg,
 ): AnnotatedString = buildAnnotatedString {
     var index = 0
     while (index < text.length) {
         when {
+            text.startsWith("***", index) -> {
+                val end = text.indexOf("***", index + 3)
+                if (end > index + 3) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
+                        append(text.substring(index + 3, end))
+                    }
+                    index = end + 3
+                } else {
+                    append(text[index])
+                    index += 1
+                }
+            }
+
             text.startsWith("**", index) -> {
                 val end = text.indexOf("**", index + 2)
                 if (end > index + 2) {
@@ -2087,6 +2587,32 @@ private fun renderInlineMarkdown(
                         append(text.substring(index + 2, end))
                     }
                     index = end + 2
+                } else {
+                    append(text[index])
+                    index += 1
+                }
+            }
+
+            text.startsWith("~~", index) -> {
+                val end = text.indexOf("~~", index + 2)
+                if (end > index + 2) {
+                    withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
+                        append(text.substring(index + 2, end))
+                    }
+                    index = end + 2
+                } else {
+                    append(text[index])
+                    index += 1
+                }
+            }
+
+            text[index] == '*' && (index + 1 < text.length && text[index + 1] != ' ') -> {
+                val end = text.indexOf('*', index + 1)
+                if (end > index + 1) {
+                    withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                        append(text.substring(index + 1, end))
+                    }
+                    index = end + 1
                 } else {
                     append(text[index])
                     index += 1
@@ -2106,6 +2632,32 @@ private fun renderInlineMarkdown(
                         append(" ${text.substring(index + 1, end)} ")
                     }
                     index = end + 1
+                } else {
+                    append(text[index])
+                    index += 1
+                }
+            }
+
+            text[index] == '[' -> {
+                val closeBracket = text.indexOf(']', index + 1)
+                if (closeBracket > index + 1 && closeBracket + 1 < text.length && text[closeBracket + 1] == '(') {
+                    val closeParen = text.indexOf(')', closeBracket + 2)
+                    if (closeParen > closeBracket + 2) {
+                        val label = text.substring(index + 1, closeBracket)
+                        withStyle(
+                            SpanStyle(
+                                color = linkColor,
+                                fontWeight = FontWeight.Medium,
+                                textDecoration = TextDecoration.Underline,
+                            ),
+                        ) {
+                            append(label)
+                        }
+                        index = closeParen + 1
+                    } else {
+                        append(text[index])
+                        index += 1
+                    }
                 } else {
                     append(text[index])
                     index += 1

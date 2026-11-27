@@ -18,6 +18,9 @@ import com.antigravity.mobile.contracts.ChatMessageRole
 import com.antigravity.mobile.contracts.ChrootConstants
 import com.antigravity.mobile.contracts.ChrootManager
 import com.antigravity.mobile.contracts.ChrootState
+import com.antigravity.mobile.contracts.ContractsJson
+import com.antigravity.mobile.contracts.SwarmMemberStatus
+import com.antigravity.mobile.contracts.ToolCallStatus
 import com.antigravity.mobile.contracts.DiffApprovalStatus
 import com.antigravity.mobile.contracts.DiffChangeType
 import com.antigravity.mobile.contracts.DiffItem
@@ -59,6 +62,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
 import java.io.FileNotFoundException
 import java.net.URI
 import java.net.URLDecoder
@@ -523,7 +527,8 @@ class WorkspaceViewModel @Inject constructor(
                         }
                         existing.copy(toolCalls = updatedCalls)
                     }
-                    syncActiveConversation(state, updatedMessages, sessionId = event.sessionId)
+                    val synced = syncActiveConversation(state, updatedMessages, sessionId = event.sessionId)
+                    projectToolCallToSwarmAndSubagents(synced, event)
                 }
             }
 
@@ -3118,6 +3123,152 @@ class WorkspaceViewModel @Inject constructor(
             isStreaming = true,
         )
         return messages + transform(fresh)
+    }
+
+    private fun projectToolCallToSwarmAndSubagents(
+        state: WorkspaceUiState,
+        event: AcpEvent.ToolCallUpdate,
+    ): WorkspaceUiState {
+        val rawName = event.toolName.trim().lowercase()
+        val isSwarmTool = rawName == "swarm" || rawName.endsWith(":swarm")
+        val isSubagentTool = rawName == "invoke_subagent" || rawName.endsWith(":invoke_subagent")
+        val isPostMessageTool = rawName == "post_message" || rawName.endsWith(":post_message")
+        if (!isSwarmTool && !isSubagentTool && !isPostMessageTool) return state
+
+        val argsObj = runCatching {
+            ContractsJson.parseToJsonElement(event.argumentsJson) as? kotlinx.serialization.json.JsonObject
+        }.getOrNull() ?: return state
+
+        fun JsonObject.str(vararg keys: String): String? = keys.firstNotNullOfOrNull { key ->
+            (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
+        }
+
+        val mappedStatus = when (event.status) {
+            ToolCallStatus.COMPLETED -> SwarmMemberStatus.DONE
+            ToolCallStatus.FAILED, ToolCallStatus.CANCELLED -> SwarmMemberStatus.ERROR
+            ToolCallStatus.PENDING, ToolCallStatus.RUNNING, ToolCallStatus.AWAITING_APPROVAL -> SwarmMemberStatus.WORKING
+        }
+
+        return when {
+            isSwarmTool -> {
+                val action = argsObj.str("action")?.lowercase().orEmpty()
+                val board = state.swarmBoardState
+                when (action) {
+                    "title" -> {
+                        val title = argsObj.str("title").orEmpty()
+                        if (title.isBlank()) state else state.copy(swarmBoardState = board.copy(swarmTitle = title))
+                    }
+
+                    "add" -> {
+                        val workerName = argsObj.str("name") ?: return state
+                        val brief = argsObj.str("brief").orEmpty()
+                        val model = argsObj.str("model") ?: state.selectedModel.displayName
+                        val member = com.antigravity.mobile.contracts.SwarmMemberInfo(
+                            name = workerName,
+                            role = "Swarm Worker",
+                            model = model,
+                            status = SwarmMemberStatus.WORKING,
+                            lastUpdateText = brief.take(120),
+                        )
+                        val updatedMembers = board.members.filterNot { it.name == workerName } + member
+                        val nextSeq = (board.messages.maxOfOrNull { it.seq } ?: 0) + 1
+                        val updatedMessages = if (brief.isNotBlank() && board.messages.none { it.text == "@$workerName $brief" }) {
+                            board.messages + com.antigravity.mobile.contracts.SwarmBoardMessage(
+                                seq = nextSeq,
+                                sender = "coordinator",
+                                text = "@$workerName $brief",
+                                mentions = listOf(workerName),
+                            )
+                        } else {
+                            board.messages
+                        }
+                        val subagent = SubagentItem(
+                            id = workerName,
+                            name = workerName,
+                            role = "Swarm Worker",
+                            model = model,
+                            status = SwarmMemberStatus.WORKING,
+                            lastUpdate = brief.take(120),
+                        )
+                        val updatedSubagents = state.subagents.filterNot { it.id == workerName } + subagent
+                        state.copy(
+                            swarmBoardState = board.copy(
+                                swarmTitle = board.swarmTitle.ifBlank { "Antigravity Swarm" },
+                                members = updatedMembers,
+                                messages = updatedMessages,
+                            ),
+                            subagents = updatedSubagents,
+                        )
+                    }
+
+                    "kill" -> {
+                        val workerName = argsObj.str("name") ?: return state
+                        val updatedMembers = board.members.map { m ->
+                            if (m.name == workerName) m.copy(status = SwarmMemberStatus.KILLED) else m
+                        }
+                        val updatedSubagents = state.subagents.map { s ->
+                            if (s.id == workerName) s.copy(status = SwarmMemberStatus.KILLED) else s
+                        }
+                        state.copy(
+                            swarmBoardState = board.copy(members = updatedMembers),
+                            subagents = updatedSubagents,
+                        )
+                    }
+
+                    else -> state
+                }
+            }
+
+            isSubagentTool -> {
+                val role = argsObj.str("Role", "role") ?: argsObj.str("TypeName", "typeName") ?: "Alt Ajan"
+                val prompt = argsObj.str("Prompt", "prompt").orEmpty()
+                val model = argsObj.str("Model", "model") ?: state.selectedModel.displayName
+                val id = event.callId
+                val subagent = SubagentItem(
+                    id = id,
+                    name = role,
+                    role = argsObj.str("TypeName", "typeName") ?: "subagent",
+                    model = model,
+                    status = mappedStatus,
+                    lastUpdate = (event.outputPreview ?: prompt).take(120),
+                )
+                val updatedSubagents = state.subagents.filterNot { it.id == id } + subagent
+                val member = com.antigravity.mobile.contracts.SwarmMemberInfo(
+                    name = role,
+                    role = subagent.role,
+                    model = model,
+                    status = mappedStatus,
+                    lastUpdateText = subagent.lastUpdate,
+                )
+                val updatedMembers = state.swarmBoardState.members.filterNot { it.name == role } + member
+                state.copy(
+                    subagents = updatedSubagents,
+                    swarmBoardState = state.swarmBoardState.copy(members = updatedMembers),
+                )
+            }
+
+            isPostMessageTool -> {
+                val text = argsObj.str("text", "Message", "message") ?: return state
+                val board = state.swarmBoardState
+                if (board.messages.any { it.text == text }) return state
+                val nextSeq = (board.messages.maxOfOrNull { it.seq } ?: 0) + 1
+                val mentions = Regex("@([a-zA-Z0-9_-]+)").findAll(text).map { it.groupValues[1] }.toList()
+                val msg = com.antigravity.mobile.contracts.SwarmBoardMessage(
+                    seq = nextSeq,
+                    sender = "coordinator",
+                    text = text,
+                    mentions = mentions,
+                )
+                state.copy(
+                    swarmBoardState = board.copy(
+                        swarmTitle = board.swarmTitle.ifBlank { "Antigravity Swarm" },
+                        messages = board.messages + msg,
+                    ),
+                )
+            }
+
+            else -> state
+        }
     }
 
     private fun parseDiffArtifact(event: AcpEvent.ArtifactUpdate): DiffItem {
