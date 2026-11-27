@@ -875,7 +875,9 @@ private fun AccountsQuotaSettingsContent(
 ) {
     val extendedColors = LocalAntigravityColors.current
     val colorScheme = MaterialTheme.colorScheme
+    var showAddGoogleAccountDialog by remember { mutableStateOf(false) }
     var showImportDesktopDialog by remember { mutableStateOf(false) }
+    var profilePendingRename by remember { mutableStateOf<AccountProfile?>(null) }
     var profilePendingDeletion by remember { mutableStateOf<AccountProfile?>(null) }
     var manualAuthCode by remember { mutableStateOf("") }
 
@@ -904,7 +906,7 @@ private fun AccountsQuotaSettingsContent(
                 Text("Tüm Kotaları Yenile")
             }
 
-            FilledTonalButton(onClick = { onAction(WorkspaceAction.AddGoogleAccount()) }) {
+            FilledTonalButton(onClick = { showAddGoogleAccountDialog = true }) {
                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("Google Hesabı Ekle")
@@ -1006,20 +1008,48 @@ private fun AccountsQuotaSettingsContent(
                             )
                         }
 
-                        TextButton(
-                            onClick = { profilePendingDeletion = profile },
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = extendedColors.critical,
-                            ),
-                        ) {
-                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Profil Sil")
+                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            TextButton(onClick = { profilePendingRename = profile }) {
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Adlandır")
+                            }
+                            TextButton(
+                                onClick = { profilePendingDeletion = profile },
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = extendedColors.critical,
+                                ),
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Sil")
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    if (showAddGoogleAccountDialog) {
+        AddGoogleAccountDialog(
+            onDismiss = { showAddGoogleAccountDialog = false },
+            onConfirm = { label ->
+                showAddGoogleAccountDialog = false
+                onAction(WorkspaceAction.AddGoogleAccount(label))
+            },
+        )
+    }
+
+    profilePendingRename?.let { target ->
+        RenameProfileDialog(
+            currentName = target.displayName,
+            onDismiss = { profilePendingRename = null },
+            onConfirm = { newName ->
+                onAction(WorkspaceAction.RenameProfile(target.id, newName))
+                profilePendingRename = null
+            },
+        )
     }
 
     if (showImportDesktopDialog) {

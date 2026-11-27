@@ -102,6 +102,7 @@ class WorkspaceViewModel @Inject constructor(
     private var hasAutoOpenedOnboarding = false
     private var lastHandledAuthSuccess: AuthFlowState.Authenticated? = null
     private var lastRootBackPressEpochMs: Long = 0L
+    private var profileAliases: MutableMap<String, String> = mutableMapOf()
 
     internal constructor(
         accountRepository: AccountRepository,
@@ -171,6 +172,7 @@ class WorkspaceViewModel @Inject constructor(
             WorkspaceAction.ToggleVoiceListening -> handleToggleVoice()
             is WorkspaceAction.ChangeVoiceLocale -> _uiState.update { it.copy(voiceLocaleTag = action.localeTag) }
             is WorkspaceAction.AddGoogleAccount -> launchGoogleSignIn(forceNewProfile = true, label = action.label)
+            is WorkspaceAction.RenameProfile -> handleRenameProfile(action.profileId, action.newName)
             is WorkspaceAction.SwitchProfile -> handleSwitchProfile(action.profileId)
             is WorkspaceAction.StartOAuthLogin -> handleStartOAuthLogin(action.profileId, action.capturedAuthUrl)
             is WorkspaceAction.SubmitAuthCode -> handleSubmitAuthCode(action.profileId, action.code)
@@ -310,16 +312,17 @@ class WorkspaceViewModel @Inject constructor(
     private fun observeCoreFlows() {
         viewModelScope.launch {
             accountRepository.profiles.collect { profiles ->
-                _uiState.update { it.copy(profiles = profiles) }
+                _uiState.update { it.copy(profiles = applyProfileAliases(profiles)) }
             }
         }
         viewModelScope.launch {
             accountRepository.activeProfile.collect { activeProfile ->
-                _uiState.update { it.copy(activeProfile = activeProfile) }
-                evaluateQuotaWarning(activeProfile)
+                val aliased = applyProfileAlias(activeProfile)
+                _uiState.update { it.copy(activeProfile = aliased) }
+                evaluateQuotaWarning(aliased)
                 if (!hasAutoRefreshedQuota && _uiState.value.settings.autoRefreshQuotaOnLaunch &&
-                    activeProfile != null && activeProfile.isAuthenticated &&
-                    activeProfile.quota.updatedAtEpochMs == 0L && activeProfile.quota.remainingPercent == null
+                    aliased != null && aliased.isAuthenticated &&
+                    aliased.quota.updatedAtEpochMs == 0L && aliased.quota.remainingPercent == null
                 ) {
                     hasAutoRefreshedQuota = true
                     handleRefreshAllQuotas()
@@ -2042,6 +2045,9 @@ class WorkspaceViewModel @Inject constructor(
                 }
                 accountRepository.deleteProfile(profileId).getOrThrow()
             }.onSuccess {
+                if (profileAliases.remove(profileId) != null) {
+                    persistSnapshot()
+                }
                 _uiState.update { state ->
                     val remaining = state.profiles.filterNot { it.id == profileId }
                     val nextActive = if (state.activeProfile?.id == profileId) {
@@ -2794,9 +2800,14 @@ class WorkspaceViewModel @Inject constructor(
         viewModelScope.launch {
             runSuspendCatching {
                 val currentState = _uiState.value
-                val profileName = label?.trim()?.ifBlank { null } ?: DEFAULT_QUICK_PROFILE_NAME
+                val customLabel = label?.trim()?.ifBlank { null }
+                val profileName = customLabel ?: DEFAULT_QUICK_PROFILE_NAME
                 val targetProfile = if (forceNewProfile) {
                     val created = accountRepository.createProfile(profileName, null).getOrThrow()
+                    if (customLabel != null) {
+                        profileAliases[created.id] = customLabel
+                        persistSnapshot()
+                    }
                     accountRepository.switchActiveProfile(created.id).getOrThrow()
                 } else {
                     currentState.activeProfile
@@ -2808,12 +2819,13 @@ class WorkspaceViewModel @Inject constructor(
                             accountRepository.switchActiveProfile(created.id).getOrThrow()
                         }
                 }
+                val aliasedTarget = applyProfileAlias(targetProfile) ?: targetProfile
 
                 _uiState.update { state ->
-                    val alreadyListed = state.profiles.any { it.id == targetProfile.id }
+                    val alreadyListed = state.profiles.any { it.id == aliasedTarget.id }
                     state.copy(
-                        profiles = if (alreadyListed) state.profiles else state.profiles + targetProfile,
-                        activeProfile = targetProfile,
+                        profiles = if (alreadyListed) state.profiles else state.profiles + aliasedTarget,
+                        activeProfile = aliasedTarget,
                     )
                 }
 
@@ -2901,9 +2913,36 @@ class WorkspaceViewModel @Inject constructor(
         }
     }
 
+    private fun handleRenameProfile(profileId: String, newName: String) {
+        val cleanName = newName.trim()
+        if (cleanName.isEmpty()) return
+        profileAliases[profileId] = cleanName
+        _uiState.update { state ->
+            state.copy(
+                profiles = state.profiles.map { p ->
+                    if (p.id == profileId) p.copy(displayName = cleanName) else p
+                },
+                activeProfile = state.activeProfile?.let { active ->
+                    if (active.id == profileId) active.copy(displayName = cleanName) else active
+                },
+            )
+        }
+        persistSnapshot()
+    }
+
+    private fun applyProfileAliases(profiles: List<AccountProfile>): List<AccountProfile> =
+        if (profileAliases.isEmpty()) profiles else profiles.map { applyProfileAlias(it) ?: it }
+
+    private fun applyProfileAlias(profile: AccountProfile?): AccountProfile? {
+        if (profile == null) return null
+        val alias = profileAliases[profile.id]?.trim()?.ifBlank { null } ?: return profile
+        return profile.copy(displayName = alias)
+    }
+
     private fun applyDetectedEmailIfGeneric(profile: AccountProfile, detectedEmail: String): AccountProfile {
+        val hasCustomAlias = !profileAliases[profile.id].isNullOrBlank()
         val normalizedCurrent = profile.displayName.trim().lowercase(Locale.ROOT)
-        val isGeneric = normalizedCurrent.isEmpty() || normalizedCurrent in GENERIC_PROFILE_NAMES
+        val isGeneric = !hasCustomAlias && (normalizedCurrent.isEmpty() || normalizedCurrent in GENERIC_PROFILE_NAMES)
         return profile.copy(
             email = profile.email?.takeIf { it.isNotBlank() } ?: detectedEmail,
             displayName = if (isGeneric) detectedEmail else profile.displayName,
@@ -2945,6 +2984,7 @@ class WorkspaceViewModel @Inject constructor(
             val snapshot = runSuspendCatching { localStore.load() }.getOrNull()
             _uiState.update { state ->
                 if (snapshot != null) {
+                    profileAliases = snapshot.profileAliases.toMutableMap()
                     val restoredProjects = snapshot.projects
                     val restoredSelectedProjectId = snapshot.activeProjectId
                         ?.takeIf { id -> restoredProjects.any { it.id == id } }
@@ -2977,6 +3017,8 @@ class WorkspaceViewModel @Inject constructor(
                         expandedProjectIds = restoredSelectedProjectId?.let { setOf(it) } ?: emptySet(),
                         messages = hydratedMessages,
                         settings = snapshot.settings,
+                        profiles = applyProfileAliases(state.profiles),
+                        activeProfile = applyProfileAlias(state.activeProfile),
                         mentionSuggestions = buildMentionSuggestions(selectedProjectObj),
                     )
                 } else {
@@ -3002,6 +3044,7 @@ class WorkspaceViewModel @Inject constructor(
             activeProjectId = state.selectedProjectId,
             activeConversationId = state.activeConversationId,
             settings = state.settings,
+            profileAliases = profileAliases.toMap(),
             workspaceInitialized = true,
         )
         viewModelScope.launch {

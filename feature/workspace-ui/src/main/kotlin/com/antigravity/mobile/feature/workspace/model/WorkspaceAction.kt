@@ -29,6 +29,7 @@ sealed interface WorkspaceAction {
 
     // Accounts & OAuth
     data class AddGoogleAccount(val label: String? = null) : WorkspaceAction
+    data class RenameProfile(val profileId: String, val newName: String) : WorkspaceAction
     data class SwitchProfile(val profileId: String) : WorkspaceAction
     data class StartOAuthLogin(val profileId: String, val capturedAuthUrl: String? = null) : WorkspaceAction
     data class SubmitAuthCode(val profileId: String, val code: String) : WorkspaceAction

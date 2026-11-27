@@ -125,6 +125,7 @@ fun OnboardingScreen(
     val effectiveDeviceAdminActive = isDeviceAdminActive || onboarding.isDeviceAdminActive
     val effectiveOverlayGranted = onboarding.isOverlayPermissionGranted || canDrawOverlaysSafe(context)
 
+    var showAddGoogleAccountDialog by remember { mutableStateOf(false) }
     var showAdvancedAuth by remember { mutableStateOf(false) }
     var manualAuthCode by remember { mutableStateOf("") }
     var desktopImportPath by remember { mutableStateOf("/sdcard/Download/gemini-profile.tar.gz") }
@@ -875,7 +876,7 @@ fun OnboardingScreen(
                     }
 
                     OutlinedButton(
-                        onClick = { onAction(WorkspaceAction.AddGoogleAccount()) },
+                        onClick = { showAddGoogleAccountDialog = true },
                         enabled = authState !is AuthFlowState.Starting &&
                             authState !is AuthFlowState.SubmittingCode &&
                             !onboarding.isAutoFixingAll,
@@ -890,6 +891,15 @@ fun OnboardingScreen(
                         Text(
                             text = "Farklı Google Hesabı Ekle",
                             style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                    if (showAddGoogleAccountDialog) {
+                        com.antigravity.mobile.feature.workspace.ui.settings.AddGoogleAccountDialog(
+                            onDismiss = { showAddGoogleAccountDialog = false },
+                            onConfirm = { label ->
+                                showAddGoogleAccountDialog = false
+                                onAction(WorkspaceAction.AddGoogleAccount(label))
+                            },
                         )
                     }
                 } else {

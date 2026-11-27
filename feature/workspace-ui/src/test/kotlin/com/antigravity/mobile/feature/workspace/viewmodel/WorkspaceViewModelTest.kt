@@ -1787,4 +1787,76 @@ class WorkspaceViewModelTest {
         coVerify(exactly = 1) { accountRepository.startLoginFlow(newProfile.id, null) }
         assertEquals("https://accounts.google.com/o/oauth2/auth?state=xyz", viewModel.uiState.value.pendingChromeCustomTabUrl)
     }
+
+    @Test
+    fun `AddGoogleAccount with custom label and RenameProfile persist profile alias across reload`() = runTest {
+        val tempDir = java.nio.file.Files.createTempDirectory("vm-alias-test").toFile()
+        try {
+            val storeFile = File(tempDir, "workspace_state.json")
+            val fileStore = FileWorkspaceLocalStore(file = storeFile, ioDispatcher = testDispatcher)
+            val labeledProfile = primaryProfile.copy(
+                id = "prof-work",
+                displayName = "İş Hesabı",
+                email = null,
+                isAuthenticated = false,
+            )
+            chrootStateFlow.value = ChrootState.Mounted(
+                agyVersion = "1.5.18",
+                mountStatus = MountStatus(
+                    procMounted = true,
+                    sysMounted = true,
+                    devMounted = true,
+                    devPtsMounted = true,
+                    sdcardMounted = true,
+                    profilesMounted = true,
+                ),
+            )
+            coEvery { accountRepository.createProfile("İş Hesabı", null) } returns Result.success(labeledProfile)
+            coEvery { accountRepository.switchActiveProfile("prof-work") } answers {
+                profilesFlow.value = listOf(primaryProfile, labeledProfile)
+                activeProfileFlow.value = labeledProfile
+                Result.success(labeledProfile)
+            }
+            coEvery { accountRepository.startLoginFlow("prof-work", null) } returns Result.success(
+                LoginChallenge(profileId = "prof-work", authUrl = "https://accounts.google.com/o/oauth2/auth"),
+            )
+
+            val vm1 = WorkspaceViewModel(
+                accountRepository = accountRepository,
+                acpClient = acpClient,
+                androidMcpServer = androidMcpServer,
+                automationScheduler = automationScheduler,
+                securityPolicyEngine = securityPolicyEngine,
+                voiceTranscriber = voiceTranscriber,
+                chrootManager = chrootManager,
+                rootExecutor = rootExecutor,
+                localStore = fileStore,
+            )
+            advanceUntilIdle()
+
+            vm1.onAction(WorkspaceAction.AddGoogleAccount("İş Hesabı"))
+            advanceUntilIdle()
+            coVerify(exactly = 1) { accountRepository.createProfile("İş Hesabı", null) }
+
+            vm1.onAction(WorkspaceAction.RenameProfile(primaryProfile.id, "Kişisel"))
+            advanceUntilIdle()
+            assertEquals("Kişisel", vm1.uiState.value.profiles.first { it.id == primaryProfile.id }.displayName)
+
+            val vm2 = WorkspaceViewModel(
+                accountRepository = accountRepository,
+                acpClient = acpClient,
+                androidMcpServer = androidMcpServer,
+                automationScheduler = automationScheduler,
+                securityPolicyEngine = securityPolicyEngine,
+                voiceTranscriber = voiceTranscriber,
+                chrootManager = chrootManager,
+                rootExecutor = rootExecutor,
+                localStore = fileStore,
+            )
+            advanceUntilIdle()
+            assertEquals("Kişisel", vm2.uiState.value.profiles.first { it.id == primaryProfile.id }.displayName)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
 }

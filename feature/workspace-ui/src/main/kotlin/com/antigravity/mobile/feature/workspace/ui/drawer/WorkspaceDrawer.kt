@@ -132,6 +132,7 @@ fun WorkspaceDrawerSheet(
     var automationsExpanded by remember { mutableStateOf(false) }
     var generalConversationsExpanded by remember { mutableStateOf(true) }
     var showAccountSwitcherDialog by remember { mutableStateOf(false) }
+    var showAddGoogleAccountDialog by remember { mutableStateOf(false) }
     var showImportDesktopDialog by remember { mutableStateOf(false) }
 
     val trimmedQuery = state.sidebarSearchQuery.trim()
@@ -615,8 +616,7 @@ fun WorkspaceDrawerSheet(
             },
             onOpenAddAccount = {
                 showAccountSwitcherDialog = false
-                onAction(WorkspaceAction.AddGoogleAccount())
-                onCloseDrawer()
+                showAddGoogleAccountDialog = true
             },
             onOpenDesktopImport = {
                 showAccountSwitcherDialog = false
@@ -625,6 +625,17 @@ fun WorkspaceDrawerSheet(
             onOpenAccountSettings = {
                 showAccountSwitcherDialog = false
                 onAction(WorkspaceAction.OpenSettingsDetail(SettingsCategory.ACCOUNTS_QUOTA))
+                onCloseDrawer()
+            },
+        )
+    }
+
+    if (showAddGoogleAccountDialog) {
+        com.antigravity.mobile.feature.workspace.ui.settings.AddGoogleAccountDialog(
+            onDismiss = { showAddGoogleAccountDialog = false },
+            onConfirm = { label ->
+                showAddGoogleAccountDialog = false
+                onAction(WorkspaceAction.AddGoogleAccount(label))
                 onCloseDrawer()
             },
         )

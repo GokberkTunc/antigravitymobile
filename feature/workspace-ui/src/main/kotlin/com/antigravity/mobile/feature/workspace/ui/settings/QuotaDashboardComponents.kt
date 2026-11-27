@@ -903,6 +903,7 @@ fun QuotaDetailBottomSheet(
 
     val extendedColors = LocalAntigravityColors.current
     val colorScheme = MaterialTheme.colorScheme
+    var showAddGoogleAccountDialog by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val sheetCardColor = if (extendedColors.isDark) {
         colorScheme.surfaceContainer
@@ -1095,10 +1096,7 @@ fun QuotaDetailBottomSheet(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedButton(
-                    onClick = {
-                        onAction(WorkspaceAction.CloseQuotaSheet)
-                        onAction(WorkspaceAction.AddGoogleAccount())
-                    },
+                    onClick = { showAddGoogleAccountDialog = true },
                     modifier = Modifier.weight(1f),
                 ) {
                     Text("+ Hesap Ekle")
@@ -1122,4 +1120,91 @@ fun QuotaDetailBottomSheet(
             }
         }
     }
+
+    if (showAddGoogleAccountDialog) {
+        AddGoogleAccountDialog(
+            onDismiss = { showAddGoogleAccountDialog = false },
+            onConfirm = { label ->
+                showAddGoogleAccountDialog = false
+                onAction(WorkspaceAction.CloseQuotaSheet)
+                onAction(WorkspaceAction.AddGoogleAccount(label))
+            },
+        )
+    }
+}
+
+@Composable
+internal fun AddGoogleAccountDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (label: String?) -> Unit,
+) {
+    var label by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Google Hesabı Ekle") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Yeni bir izole profil oluşturulur ve Google giriş ekranı açılır. İsim boş bırakılırsa Google e-postanız kullanılır.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = label,
+                    onValueChange = { label = it },
+                    label = { Text("Profil Adı (İsteğe bağlı)") },
+                    placeholder = { Text("Örn: İş Hesabı") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(label.trim().ifBlank { null }) }) {
+                Text("Google ile Giriş Yap")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("İptal")
+            }
+        },
+    )
+}
+
+@Composable
+internal fun RenameProfileDialog(
+    currentName: String,
+    onDismiss: () -> Unit,
+    onConfirm: (newName: String) -> Unit,
+) {
+    var name by remember(currentName) { mutableStateOf(currentName) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Profili Yeniden Adlandır") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Profil Adı") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(name.trim()) },
+                enabled = name.isNotBlank(),
+            ) {
+                Text("Kaydet")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("İptal")
+            }
+        },
+    )
 }

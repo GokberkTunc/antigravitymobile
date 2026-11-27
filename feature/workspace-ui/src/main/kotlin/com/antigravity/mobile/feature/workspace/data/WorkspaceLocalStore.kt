@@ -28,6 +28,7 @@ data class WorkspaceSnapshot(
     val activeProjectId: String? = null,
     val activeConversationId: String? = null,
     val settings: AppSettings = AppSettings(),
+    val profileAliases: Map<String, String> = emptyMap(),
     /**
      * Marks that the snapshot was explicitly persisted (distinguishing a user who genuinely
      * deleted all projects from a first-ever install where no snapshot file exists on disk).
