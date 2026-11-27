@@ -1,7 +1,6 @@
 ---
 trigger: glob
-globs:
-  - "**/*.kt"
+globs: "**/*.kt"
 ---
 
 # Kotlin, Jetpack Compose ve Eşzamanlılık Kuralları

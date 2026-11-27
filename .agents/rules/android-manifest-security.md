@@ -1,9 +1,6 @@
 ---
 trigger: glob
-globs:
-  - "**/AndroidManifest.xml"
-  - "**/build.gradle.kts"
-  - "gradle/libs.versions.toml"
+globs: "**/AndroidManifest.xml, **/build.gradle.kts, gradle/libs.versions.toml"
 ---
 
 # Android Manifest, SDK 35 ve Güvenlik Kuralları
